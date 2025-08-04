@@ -12,7 +12,7 @@ USER_POOL_ID = os.getenv('COGNITO_USER_POOL_ID')
 
 class TokenVerifier(ABC):
     @abstractmethod
-    def validate_token(self, token: str) -> Optional[Any]:
+    def validate_token(self, token: str, **kwargs) -> Optional[Any]:
         pass
 
 class CognitoTokenVerifier(TokenVerifier):
