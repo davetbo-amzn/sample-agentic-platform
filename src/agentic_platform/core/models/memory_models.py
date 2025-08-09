@@ -2,6 +2,8 @@ from typing import Dict, Any, Optional, List, Literal, Union, Annotated
 from pydantic import BaseModel, Field, field_validator, Discriminator
 from uuid import uuid4
 from datetime import datetime
+import boto3
+from enum import Enum
 
 ##############################################################################
 # Define a ToolCall type. This follows the MCP Tool specs params.
@@ -189,8 +191,20 @@ class Memory(BaseModel):
     
 
 class GetSessionContextRequest(BaseModel):
-    user_id: Optional[str] = None
+    # DT: Do we really want user_id optional here? If so
+    # we need to make sure that omitting it doesn't have
+    # a default "return all" behavior to avoid devs 
+    # accidentally using it wrong and breaking multi-tenant
+    # isolation. I see in search results it looks like the pattern
+    # is to provide one or the other but I haven't dug into
+    # default behavior yet.
+    # DT: update: you can't get a session without an actor ID in Bedrock
+    # AgentCore so we'll have to make user_id required
+    # user_id: Optional[str] = None
+    user_id: str
     session_id: Optional[str] = None
+    max_results: Optional[int] = 20
+    next_token: Optional[str] = None
 
 class GetSessionContextResponse(BaseModel):
     results: List[SessionContext]
@@ -202,11 +216,15 @@ class UpsertSessionContextResponse(BaseModel):
     session_context: SessionContext
     
 class GetMemoriesRequest(BaseModel):
-    user_id: Optional[str] = None
-    session_id: Optional[str] = None
+    # user ID and session id can't be optional with AgentCore
+    # user_id: Optional[str] = None
+    # session_id: Optional[str] = None
+    user_id: str
+    session_id: str
     agent_id: Optional[str] = None
     embedding: Optional[List[float]] = None
     limit: int = 2
+    next_token: Optional[str]=None
 
     # Add validation so you can't get memories of an agent without session or user
     @field_validator("agent_id")
@@ -228,3 +246,37 @@ class CreateMemoryRequest(BaseModel):
     
 class CreateMemoryResponse(BaseModel):
     memory: Memory
+
+class CreateAgentCoreMemoryProviderRequest(BaseModel):
+    environment: str='AgentCore-AgentPath'
+    retention_days: int=30,
+
+class CreateAgentCoreMemoryProviderResponse(BaseModel):
+    memory_id: str
+
+class DeleteAgentCoreMemoryProviderRequest(BaseModel):
+    memory_id: str
+
+class DeleteAgentCoreMemoryProviderResponse(BaseModel):
+    memory_id: str
+
+
+class UpdateAgentCoreMemoryProviderRequest(BaseModel):
+    memory_id: str
+    description: str=None
+    event_expiry_duration: int=None
+    memory_strategies: List[Dict]
+
+class UpdateAgentCoreMemoryProviderResponse(BaseModel):
+    memory_id: str
+    name: str
+    description: str
+    event_expiry_duration: str
+    memory_strategies: List[Dict]
+
+class MemoryClientType(Enum):
+    POSTGRESQL = "POSTGRESQL"
+    AGENTCORE = "AGENTCORE"
+
+    def __str__(memory_client_type):
+        return str(memory_client_type)

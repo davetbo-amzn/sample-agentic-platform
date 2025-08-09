@@ -8,13 +8,21 @@ from agentic_platform.core.models.memory_models import (
     GetMemoriesRequest,
     GetMemoriesResponse,
     CreateMemoryRequest,
-    CreateMemoryResponse
+    CreateMemoryResponse,
+    CreateAgentCoreMemoryProviderRequest,
+    CreateAgentCoreMemoryProviderResponse,
+    DeleteAgentCoreMemoryProviderRequest,
+    DeleteAgentCoreMemoryProviderResponse,
+    UpdateAgentCoreMemoryProviderRequest,
+    UpdateAgentCoreMemoryProviderResponse
 )
+
 from agentic_platform.core.middleware.configure_middleware import configuration_server_middleware
 from agentic_platform.service.memory_gateway.api.get_session_controller import GetSessionContextController
 from agentic_platform.service.memory_gateway.api.upsert_session_controller import UpsertSessionContextController
 from agentic_platform.service.memory_gateway.api.get_memory_controller import GetMemoriesController
 from agentic_platform.service.memory_gateway.api.create_memory_controller import CreateMemoryController
+import os
 
 app = FastAPI()
 
@@ -47,6 +55,21 @@ async def health():
     Health check endpoint for Kubernetes probes.
     """
     return {"status": "healthy"}
+
+if os.getenv('MEMORY_CLIENT') == 'AGENTCORE':
+    from agentic_platform.service.memory_gateway.api.agentcore_memory_provider_controller import AgentCoreMemoryProviderController
+
+    @app.post("/create-agentcore-memory-provider")
+    async def create_agentcore_memory_provider(request: CreateAgentCoreMemoryProviderRequest) -> CreateAgentCoreMemoryProviderResponse:
+        return AgentCoreMemoryProviderController.create_memory_provider(request)
+
+    @app.post("/delete-agentcore-memory-provider")
+    async def delete_agentcore_memory_provider(request: DeleteAgentCoreMemoryProviderRequest) -> DeleteAgentCoreMemoryProviderResponse:
+        return AgentCoreMemoryProviderController.delete_memory_provider(request)
+
+    @app.post("/update-agentcore-memory-provider")
+    async def update_agentcore_memory_provider(request: UpdateAgentCoreMemoryProviderRequest) -> UpdateAgentCoreMemoryProviderResponse:
+        return AgentCoreMemoryProviderController.update_memory_provider(request)
 
 if __name__ == "__main__":
     import uvicorn
