@@ -1,16 +1,13 @@
-####################################################################
-# Variables for AWS Bedrock AgentCore Memory Gateway
-####################################################################
+variable "aws_region" {
+  description = "AWS region to deploy resources"
+  type        = string
+  default     = "us-west-2"  # Default to us-west-2 as Bedrock services are typically available there
+}
 
 variable "environment_name" {
   description = "Environment name used as prefix for all resources"
   type        = string
-}
-
-variable "aws_region" {
-  description = "AWS region where resources will be deployed"
-  type        = string
-  default     = "us-east-1"  # Default to us-east-1 as Bedrock services are typically available there
+  default     = "agentcore-agentpath"
 }
 
 variable "bedrock_agentcore_memory_retention_days" {
@@ -23,8 +20,19 @@ variable "bedrock_agentcore_memory_retention_days" {
   }
 }
 
+variable "memory_lambda_zip_path" {
+  description = "Path to the Lambda deployment package zip file"
+  type        = string
+  default     = "agentcore-memory-provider-lambda.zip"
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)
-  default     = {}
+  default     = {
+    Project     = "Agentic Platform"
+    Component   = "AgentCore Memory Gateway"
+    Environment = "Test"
+    ManagedBy   = "Terraform"
+  }
 }

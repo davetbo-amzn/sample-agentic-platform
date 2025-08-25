@@ -1,0 +1,3 @@
+bedrock-agentcore-starter-toolkit # ; sys_platform == 'linux' and platform_machine == 'arm64'
+strands-agents #; sys_platform == 'linux' and platform_machine == 'arm64'
+pydantic #; sys_platform == 'linux' and platform_machine == 'arm64'

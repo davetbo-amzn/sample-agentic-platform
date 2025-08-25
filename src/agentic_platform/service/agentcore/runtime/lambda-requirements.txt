@@ -1,0 +1,6 @@
+boto3>=1.40
+bedrock-agentcore
+bedrock-agentcore-starter-toolkit
+pydantic>=2.10.6
+python-dotenv
+requests

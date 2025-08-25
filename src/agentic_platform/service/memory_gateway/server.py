@@ -9,11 +9,13 @@ from agentic_platform.core.models.memory_models import (
     GetMemoriesResponse,
     CreateMemoryRequest,
     CreateMemoryResponse,
-    CreateAgentCoreMemoryProviderRequest,
+    CreateMemoryProviderRequest,
     CreateAgentCoreMemoryProviderResponse,
-    DeleteAgentCoreMemoryProviderRequest,
+    DeleteMemoryProviderRequest,
     DeleteAgentCoreMemoryProviderResponse,
-    UpdateAgentCoreMemoryProviderRequest,
+    GetMemoryProviderRequest,
+    GetAgentCoreMemoryProviderResponse,
+    UpdateMemoryProviderRequest,
     UpdateAgentCoreMemoryProviderResponse
 )
 
@@ -60,15 +62,25 @@ if os.getenv('MEMORY_CLIENT') == 'AGENTCORE':
     from agentic_platform.service.memory_gateway.api.agentcore_memory_provider_controller import AgentCoreMemoryProviderController
 
     @app.post("/create-agentcore-memory-provider")
-    async def create_agentcore_memory_provider(request: CreateAgentCoreMemoryProviderRequest) -> CreateAgentCoreMemoryProviderResponse:
-        return AgentCoreMemoryProviderController.create_memory_provider(request)
+    async def create_agentcore_memory_provider(request: CreateMemoryProviderRequest) -> CreateAgentCoreMemoryProviderResponse:
+        server_response = AgentCoreMemoryProviderController.create_memory_provider(request)
+        print(f"returning server response: {server_response}")
+        return server_response
 
-    @app.post("/delete-agentcore-memory-provider")
-    async def delete_agentcore_memory_provider(request: DeleteAgentCoreMemoryProviderRequest) -> DeleteAgentCoreMemoryProviderResponse:
+    @app.delete("/delete-memory-provider")
+    async def delete_agentcore_memory_provider(request: DeleteMemoryProviderRequest) -> DeleteAgentCoreMemoryProviderResponse:
         return AgentCoreMemoryProviderController.delete_memory_provider(request)
 
-    @app.post("/update-agentcore-memory-provider")
-    async def update_agentcore_memory_provider(request: UpdateAgentCoreMemoryProviderRequest) -> UpdateAgentCoreMemoryProviderResponse:
+    @app.get("/get-memory-provider/")
+    async def get_agentcore_memory_provider(memory_id: str) -> GetAgentCoreMemoryProviderResponse:
+        return AgentCoreMemoryProviderController.get_memory_provider(
+            GetMemoryProviderRequest(
+                memory_id=memory_id
+            )
+        )
+
+    @app.post("/update-memory-provider")
+    async def update_agentcore_memory_provider(request: UpdateMemoryProviderRequest) -> UpdateAgentCoreMemoryProviderResponse:
         return AgentCoreMemoryProviderController.update_memory_provider(request)
 
 if __name__ == "__main__":

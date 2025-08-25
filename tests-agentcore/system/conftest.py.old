@@ -1,0 +1,861 @@
+"""
+Shared pytest configuration and fixtures for AgentCore system tests.
+"""
+
+import json
+import os
+import subprocess
+import time
+from pathlib import Path
+from typing import Dict, Any, Optional
+from uuid import uuid4
+import hmac
+import hashlib
+import base64
+import shutil
+import tempfile
+
+import boto3
+import pytest
+import requests
+from dotenv import load_dotenv
+import sys
+
+sys.path.insert(1, '../../src')
+
+from agentic_platform.service.agentcore.runtime.client.agentcore_runtime_client import AgentCoreRuntimeClient
+from agentic_platform.service.agentcore.types import GetAgentRuntimeRequest
+
+DELETE_AT_END = os.getenv('DELETE_AT_END', 'True')
+if DELETE_AT_END.lower() in ['false', '0', 'no', 'n']:
+    DELETE_AT_END = False
+else:
+    DELETE_AT_END = True
+
+def load_env_file():
+    """Load environment variables from .env file if it exists."""
+    env_path = Path(__file__).parent.parent / ".env"
+    print(f"Loading env_path: {env_path}")
+    
+    if env_path.exists():
+        load_dotenv(env_path)
+        print("Environment variables loaded successfully")
+    else:
+        print("No .env file found, using system environment variables")
+
+
+# Load .env file at module import time
+load_env_file()
+
+
+def get_terraform_outputs() -> Dict[str, Any]:
+    """Get Terraform outputs for deployed resources."""
+    try:
+        # Path to the agentcore terraform stack
+        terraform_dir = Path(__file__).parent.parent.parent / "infrastructure" / "stacks" / "agentcore"
+        
+        if not terraform_dir.exists():
+            print(f"Terraform directory not found: {terraform_dir}")
+            return {}
+        
+        result = subprocess.run(
+            ["terraform", "output", "-json"],
+            cwd=terraform_dir,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode == 0:
+            outputs = json.loads(result.stdout)
+            print(f"Retrieved Terraform outputs: {list(outputs.keys())}")
+            return outputs
+        else:
+            print(f"Terraform output failed: {result.stderr}")
+            return {}
+            
+    except Exception as e:
+        print(f"Error getting Terraform outputs: {e}")
+        return {}
+
+
+def discover_agentcore_resources() -> Dict[str, str]:
+    """Discover deployed AgentCore resources by tags and naming conventions."""
+    resources = {}
+    region = os.getenv("REGION", "us-west-2")
+    environment = os.getenv("ENVIRONMENT", "agentcore-agentpath")
+    
+    try:
+        # Lambda client for finding Lambda functions
+        lambda_client = boto3.client("lambda", region_name=region)
+        
+        # List Lambda functions and find AgentCore functions
+        response = lambda_client.list_functions()
+        for function in response.get("Functions", []):
+            function_name = function["FunctionName"]
+            if "agentcore-memory-setup" in function_name:
+                resources["memory_lambda_function_name"] = function_name
+                resources["memory_lambda_function_arn"] = function["FunctionArn"]
+                print(f"Found memory Lambda: {function_name}")
+            elif "bedrock-agentcore-runtime-controller" in function_name:
+                resources["bedrock_agentcore_runtime_controller_function_name"] = function_name
+                resources["bedrock_agentcore_runtime_controller_arn"] = function["FunctionArn"]
+                print(f"Found runtime controller Lambda: {function_name}")
+                
+    except Exception as e:
+        print(f"Error discovering resources: {e}")
+    
+    return resources
+
+
+@pytest.fixture(scope="session")
+def aws_region():
+    """Get AWS region for tests."""
+    return os.getenv("REGION", "us-west-2")
+
+
+@pytest.fixture(scope="session")
+def environment(lambda_client, deployed_resources):
+    """Get environment name from deployed Lambda function."""
+    # Try to get the environment from the deployed Lambda function
+    function_name = deployed_resources.get("bedrock_agentcore_runtime_controller_function_name")
+    
+    if function_name:
+        try:
+            response = lambda_client.get_function(FunctionName=function_name)
+            env_vars = response["Configuration"].get("Environment", {}).get("Variables", {})
+            deployed_environment = env_vars.get("ENVIRONMENT")
+            
+            if deployed_environment:
+                print(f"Using environment from deployed Lambda: {deployed_environment}")
+                return deployed_environment
+        except Exception as e:
+            print(f"Could not get environment from Lambda {function_name}: {e}")
+    
+    # Fall back to environment variable or default
+    fallback_env = os.getenv("ENVIRONMENT", "agentcore-agentpath")
+    print(f"Using fallback environment: {fallback_env}")
+    return fallback_env
+
+
+@pytest.fixture(scope="session")
+def terraform_outputs():
+    """Session-scoped fixture to get Terraform outputs."""
+    outputs = get_terraform_outputs()
+    return outputs
+
+
+@pytest.fixture(scope="session")
+def deployed_resources(terraform_outputs):
+    """Session-scoped fixture to get information about deployed resources."""
+    resources = {}
+    
+    # Try to get from Terraform outputs first
+    if terraform_outputs:
+        for key, value in terraform_outputs.items():
+            if isinstance(value, dict) and "value" in value:
+                resources[key] = value["value"]
+    
+    # Supplement with resource discovery
+    discovered = discover_agentcore_resources()
+    resources.update(discovered)
+    
+    # Fallback to environment variables
+    env_mappings = {
+        "memory_lambda_function_name": "DEPLOYED_LAMBDA_FUNCTION_NAME",
+        "ecs_cluster_name": "DEPLOYED_ECS_CLUSTER_NAME", 
+        "ecs_service_name": "DEPLOYED_ECS_SERVICE_NAME",
+        "alb_dns_name": "DEPLOYED_ALB_DNS_NAME"
+    }
+    
+    for resource_key, env_key in env_mappings.items():
+        if resource_key not in resources:
+            env_value = os.getenv(env_key)
+            if env_value:
+                resources[resource_key] = env_value
+    
+    print(f"Final deployed resources: {resources}")
+    return resources
+
+
+@pytest.fixture(scope="session")
+def lambda_client(aws_region):
+    """Session-scoped Lambda client."""
+    return boto3.client("lambda", region_name=aws_region)
+
+
+@pytest.fixture(scope="session")
+def ecs_client(aws_region):
+    """Session-scoped ECS client."""
+    return boto3.client("ecs", region_name=aws_region)
+
+
+@pytest.fixture(scope="session")
+def logs_client(aws_region):
+    """Session-scoped CloudWatch Logs client."""
+    return boto3.client("logs", region_name=aws_region)
+
+
+@pytest.fixture(scope="session")
+def agentcore_client(aws_region):
+    """Session-scoped Bedrock AgentCore client."""
+    return boto3.client("bedrock-agentcore", region_name=aws_region)
+
+
+@pytest.fixture(scope="session")
+def agentcore_control_client(aws_region):
+    """Session-scoped Bedrock AgentCore Control client."""
+    return boto3.client("bedrock-agentcore-control", region_name=aws_region)
+
+
+@pytest.fixture(scope="session")
+def memory_lambda_function(deployed_resources):
+    """Get the deployed memory Lambda function name."""
+    function_name = deployed_resources.get("memory_lambda_function_name")
+    if not function_name:
+        function_name = deployed_resources.get("bedrock_agentcore_lambda_function_name")
+    
+    assert function_name, (
+        "Memory Lambda function not found in deployed resources. "
+        "Ensure AgentCore infrastructure is deployed and DEPLOYED_LAMBDA_FUNCTION_NAME "
+        "is set in environment or Terraform outputs are available."
+    )
+    
+    return function_name
+
+
+# @pytest.fixture(scope="session")
+# def test_runtime_config(deployed_resources):
+#     """Get test runtime configuration from deployed infrastructure."""
+#     region = os.getenv("REGION", "us-west-2")
+    
+#     # For system tests, discover the actual deployed role ARN
+#     role_arn = None
+#     try:
+#         iam_client = boto3.client("iam", region_name=region)
+#         # Look for the AgentCore runtime role that actually exists
+#         roles_response = iam_client.list_roles()
+#         for role in roles_response.get("Roles", []):
+#             role_name = role["RoleName"]
+#             if "agentcore" in role_name and "runtime" in role_name and "lambda" in role_name:
+#                 # Verify this role has the correct trust policy
+#                 role_details = iam_client.get_role(RoleName=role_name)
+#                 assume_policy = role_details["Role"]["AssumeRolePolicyDocument"]
+                
+#                 # Check if bedrock-agentcore service can assume this role
+#                 for statement in assume_policy.get("Statement", []):
+#                     principals = statement.get("Principal", {})
+#                     if isinstance(principals, dict):
+#                         services = principals.get("Service", [])
+#                         if isinstance(services, str):
+#                             services = [services]
+#                         if "bedrock-agentcore.amazonaws.com" in services:
+#                             role_arn = role["Arn"]
+#                             print(f"Found deployed AgentCore runtime role: {role_arn}")
+#                             break
+                
+#                 if role_arn:
+#                     break
+                    
+#     except Exception as e:
+#         print(f"Error discovering role ARN: {e}")
+    
+#     # Fall back to environment variable if discovery fails
+#     if not role_arn:
+#         role_arn = os.getenv("TEST_ROLE_ARN")
+#         print(f"Using fallback role ARN from environment: {role_arn}")
+    
+#     config = {
+#         "container_uri": os.getenv("TEST_CONTAINER_URI"),
+#         "role_arn": role_arn,
+#         "region": region
+#     }
+    
+#     assert config["container_uri"], (
+#         "TEST_CONTAINER_URI environment variable is required for runtime tests. "
+#         "Ensure this is set in the .env file with a valid ECR container URI."
+#     )
+#     assert config["role_arn"], (
+#         "Could not find a valid AgentCore runtime role ARN. "
+#         "Ensure AgentCore infrastructure is properly deployed with a role that allows "
+#         "bedrock-agentcore.amazonaws.com to assume it."
+#     )
+    
+#     return config
+
+
+@pytest.fixture(scope="session")
+def cognito_config():
+    """Get Cognito configuration for JWT token generation."""
+    config = {
+        "user_pool_id": os.getenv("USER_POOL_ID"),
+        "client_id": os.getenv("COGNITO_USER_CLIENT_ID"),
+        "username": os.getenv("COGNITO_USERNAME"),
+        "password": os.getenv("COGNITO_PASSWORD"),
+        "region": os.getenv("REGION", "us-west-2")
+    }
+    
+    assert config["user_pool_id"], (
+        "USER_POOL_ID environment variable is required for authentication tests. "
+        "Ensure this is set in the .env file with a valid Cognito User Pool ID."
+    )
+    assert config["client_id"], (
+        "COGNITO_USER_CLIENT_ID environment variable is required for authentication tests. "
+        "Ensure this is set in the .env file with a valid Cognito User Pool Client ID."
+    )
+    assert config["username"], (
+        "COGNITO_USERNAME environment variable is required for authentication tests. "
+        "Ensure this is set in the .env file with a valid test username."
+    )
+    assert config["password"], (
+        "COGNITO_PASSWORD environment variable is required for authentication tests. "
+        "Ensure this is set in the .env file with a valid test password."
+    )
+    
+    return config
+
+
+def calculate_secret_hash(username, client_id, client_secret):
+    """Calculate the SECRET_HASH for Cognito authentication"""
+    message = bytes(username + client_id, 'utf-8')
+    key = bytes(client_secret, 'utf-8')
+    secret_hash = base64.b64encode(hmac.new(key, message, digestmod=hashlib.sha256).digest()).decode()
+    return secret_hash
+
+
+def get_jwt_token():
+    """Get JWT token from Cognito for authentication"""
+    try:
+        # Get Cognito credentials from environment
+        client_id = os.getenv("COGNITO_USER_CLIENT_ID") or os.getenv("USER_POOL_CLIENT_ID")
+        username = os.getenv("COGNITO_USERNAME")
+        password = os.getenv("COGNITO_PASSWORD")
+        client_secret = os.getenv("COGNITO_CLIENT_SECRET")
+        region = os.getenv("REGION", "us-west-2")
+        
+        if not all([client_id, username, password]):
+            print("Warning: Missing Cognito credentials, JWT token generation will fail")
+            return None
+        
+        # Create Cognito client
+        client = boto3.client('cognito-idp', region_name=region)
+        
+        # Prepare authentication parameters
+        auth_parameters = {
+            'USERNAME': username,
+            'PASSWORD': password
+        }
+        
+        # Add SECRET_HASH if client secret is provided
+        if client_secret:
+            secret_hash = calculate_secret_hash(username, client_id, client_secret)
+            auth_parameters['SECRET_HASH'] = secret_hash
+        
+        # Authenticate with Cognito
+        response = client.initiate_auth(
+            ClientId=client_id,
+            AuthFlow='USER_PASSWORD_AUTH',
+            AuthParameters=auth_parameters
+        )
+        
+        # Extract and return the token
+        token = response['AuthenticationResult']['AccessToken']
+        return token
+        
+    except Exception as e:
+        print(f"Error getting JWT token: {str(e)}")
+        return None
+
+
+def create_runtime_zip_file(unique_suffix: str) -> str:
+    """Create a zip file from the test_deployment directory for runtime creation.
+    
+    Args:
+        unique_suffix: Unique identifier to include in zip filename
+        
+    Returns:
+        Path to the created zip file
+    """
+    # Path to the unit test deployment directory that contains the runtime code
+    test_deployment_dir = Path(__file__).parent.parent / "unit" / "test_deployment"
+    
+    if not test_deployment_dir.exists():
+        raise FileNotFoundError(f"Test deployment directory not found: {test_deployment_dir}")
+    
+    # Clean up any pycache directories like unit tests do
+    pycache_dir = test_deployment_dir / "__pycache__"
+    if pycache_dir.exists():
+        print(f"Removing previous pycache files from {pycache_dir}")
+        shutil.rmtree(pycache_dir)
+    
+    # Create zip file name with unique suffix
+    zip_filename = f"system_test_runtime_{unique_suffix}"
+    zip_path = f"./{zip_filename}.zip"
+    
+    print(f"Creating {zip_path} from {test_deployment_dir}")
+    
+    # Create the zip file (same approach as unit tests)
+    result = shutil.make_archive(zip_filename, 'zip', test_deployment_dir)
+    print(f"Created zip file: {result}")
+    
+    return result
+
+
+def upload_zip_to_s3(zip_file_path: str, bucket_name: str, unique_suffix: str, region: str) -> str:
+    """Upload zip file to S3 bucket and return the S3 path.
+    
+    Args:
+        zip_file_path: Local path to the zip file
+        bucket_name: S3 bucket name
+        unique_suffix: Unique identifier for the S3 key
+        region: AWS region
+        
+    Returns:
+        S3 path in s3://bucket/key format
+    """
+    s3_client = boto3.client('s3', region_name=region)
+    
+    # Use same S3 key structure as unit tests
+    s3_key = f's3_zip_files/system_test_runtime_{unique_suffix}.zip'
+    
+    print(f"Uploading {zip_file_path} to s3://{bucket_name}/{s3_key}")
+    
+    try:
+        s3_client.upload_file(zip_file_path, bucket_name, s3_key)
+        s3_path = f's3://{bucket_name}/{s3_key}'
+        print(f"Successfully uploaded to {s3_path}")
+        return s3_path
+    except Exception as e:
+        print(f"Failed to upload to S3: {e}")
+        raise
+
+
+def cleanup_local_zip_file(zip_file_path: str):
+    """Clean up local zip file after upload."""
+    try:
+        if os.path.exists(zip_file_path):
+            os.remove(zip_file_path)
+            print(f"Cleaned up local zip file: {zip_file_path}")
+    except Exception as e:
+        print(f"Warning: Failed to cleanup zip file {zip_file_path}: {e}")
+
+
+def wait_for_lambda_ready(lambda_client, function_name: str, timeout: int = 60) -> bool:
+    """Wait for Lambda function to be in READY state."""
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        try:
+            response = lambda_client.get_function(FunctionName=function_name)
+            state = response["Configuration"]["State"]
+            
+            if state == "Active":
+                return True
+            elif state == "Failed":
+                print(f"Lambda function {function_name} is in Failed state")
+                return False
+                
+        except Exception as e:
+            print(f"Error checking Lambda state: {e}")
+        
+        time.sleep(2)
+    
+    print(f"Timeout waiting for Lambda {function_name} to be ready")
+    return False
+
+
+def wait_for_ecs_service_stable(ecs_client, cluster_name: str, service_name: str, timeout: int = 300) -> bool:
+    """Wait for ECS service to reach stable state."""
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        try:
+            response = ecs_client.describe_services(
+                cluster=cluster_name,
+                services=[service_name]
+            )
+            
+            services = response.get("services", [])
+            if not services:
+                print(f"Service {service_name} not found")
+                return False
+            
+            service = services[0]
+            status = service["status"]
+            
+            if status == "READY":
+                # Check if deployments are stable
+                deployments = service.get("deployments", [])
+                primary_deployment = next((d for d in deployments if d["status"] == "PRIMARY"), None)
+                
+                if primary_deployment and primary_deployment.get("rolloutState") == "COMPLETED":
+                    return True
+            elif status in ["DRAINING", "INACTIVE"]:
+                print(f"Service {service_name} is not active: {status}")
+                return False
+                
+        except Exception as e:
+            print(f"Error checking ECS service state: {e}")
+        
+        time.sleep(10)
+    
+    print(f"Timeout waiting for ECS service {service_name} to be stable")
+    return False
+
+
+@pytest.fixture
+def wait_for_lambda_ready_fixture(lambda_client):
+    """Fixture wrapper for wait_for_lambda_ready function."""
+    return lambda function_name, timeout=60: wait_for_lambda_ready(lambda_client, function_name, timeout)
+
+
+@pytest.fixture
+def wait_for_ecs_stable_fixture(ecs_client):
+    """Fixture wrapper for wait_for_ecs_service_stable function."""
+    return lambda cluster, service, timeout=300: wait_for_ecs_service_stable(ecs_client, cluster, service, timeout)
+
+
+@pytest.fixture(scope="session")
+def session_memory_provider(lambda_client, memory_lambda_function):
+    """Session-scoped fixture to create and manage a shared memory provider for all tests.
+    
+    Creates a single memory provider at the beginning of the test session and 
+    cleans it up in the finally block at the end of all tests.
+    """
+    memory_id = None
+    TEST_MEMORY_PROVIDER_ID = os.getenv('TEST_MEMORY_PROVIDER_ID', None)
+    if TEST_MEMORY_PROVIDER_ID:
+        memory_id = TEST_MEMORY_PROVIDER_ID
+        yield TEST_MEMORY_PROVIDER_ID
+    else:
+        test_retention = 30
+        
+        print("\n=== Creating session-scoped memory provider ===")
+        
+        # Create the memory provider
+        try:
+            test_payload = {
+                "input": {
+                    "environment": "test",
+                    "retention_days": test_retention
+                },
+                "operation": "create-memory-provider"
+            }
+            
+            print("Creating agentcore memory provider with payload. This may take up to 3-4 minutes to complete...")
+            response = lambda_client.invoke(
+                FunctionName=memory_lambda_function,
+                InvocationType="RequestResponse",
+                Payload=json.dumps(test_payload)
+            )
+            print(f"Got response from creating agent memory provider: {response} ")
+            # Check response
+            assert response["StatusCode"] == 200
+            
+            # Parse response payload
+            response_payload = json.loads(response["Payload"].read())
+            print(f"Got response payload {response_payload}, type {type(response_payload)}")
+            if "errorMessage" in response_payload:
+                error_message = response_payload["errorMessage"]
+                error_type = response_payload.get("errorType", "Unknown")
+                pytest.fail(f"Failed to create memory provider: {error_type}: {error_message}")
+            
+            if "result" in response_payload:
+                memory_id = response_payload.get("result", {}).get("memory_id")
+            else:
+                memory_id = response_payload.get("memory_id")
+            
+            assert memory_id, "Memory provider creation did not return a memory_id"
+            print(f"✅ Created memory provider: {memory_id}")
+            
+            if not response_payload['result']['status'] == 'ACTIVE':
+                # Wait for the memory provider to be fully created
+                wait_payload = {
+                    "input": {
+                        "memory_id": memory_id,
+                        "max_attempts": 10,
+                        "delay_seconds": 20
+                    },
+                    "operation": "wait-for-memory-provider-creation"
+                }
+                print(f"Waiting for memory provider to be ACTIVE")
+                
+                wait_response = lambda_client.invoke(
+                    FunctionName=memory_lambda_function,
+                    InvocationType="RequestResponse",
+                    Payload=json.dumps(wait_payload)
+                )
+                
+                wait_response_payload = json.loads(wait_response["Payload"].read())
+                if "errorMessage" in wait_response_payload:
+                    error_message = wait_response_payload["errorMessage"]
+                    error_type = wait_response_payload.get("errorType", "Unknown")
+                    pytest.fail(f"Wait operation failed: {error_type}: {error_message}")
+                else:
+                    print("✅ Memory provider is active")
+            else:
+                    print("✅ Memory provider is ACTIVE")
+        except Exception as e:
+            pytest.fail(f"Failed to create session memory provider: {e}")
+        
+        # Yield the memory provider ID for tests to use
+        yield memory_id
+        
+    # Cleanup after all tests are done
+    if memory_id and DELETE_AT_END and not TEST_MEMORY_PROVIDER_ID:
+        print(f"\n=== Cleaning up session memory provider {memory_id} ===")
+        try:
+            delete_payload = {
+                "input": {
+                    "memory_id": memory_id
+                },
+                "operation": "delete-memory-provider"
+            }
+            
+            delete_response = lambda_client.invoke(
+                FunctionName=memory_lambda_function,
+                InvocationType="RequestResponse",
+                Payload=json.dumps(delete_payload)
+            )
+            
+            # Check if delete was successful
+            delete_response_payload = json.loads(delete_response["Payload"].read())
+            
+            if "errorMessage" in delete_response_payload:
+                print(f"Warning: Memory provider cleanup returned error: {delete_response_payload['errorMessage']}")
+            else:
+                print(f"✅ Successfully cleaned up memory provider: {memory_id}")
+                
+        except Exception as e:
+            print(f"Warning: Failed to clean up memory provider {memory_id}: {e}")
+
+
+@pytest.fixture(scope="session")
+def session_runtime(cognito_config, deployed_resources):
+    """Session-scoped fixture to create and manage a shared JWT-authenticated runtime for all tests.
+    
+    Creates a single runtime at the beginning of the test session using JWT authentication
+    and S3 zip file deployment (same as unit tests), then cleans it up at the end.
+    """
+    TEST_AGENT_RUNTIME_ID = os.getenv('TEST_AGENT_RUNTIME_ID', None)
+    if TEST_AGENT_RUNTIME_ID:
+        yield AgentCoreRuntimeClient.get_agentcore_runtime(
+            GetAgentRuntimeRequest(
+                agent_runtime_id=TEST_AGENT_RUNTIME_ID
+            )
+        )    
+    else:
+        print("\n=== Creating session-scoped JWT-authenticated runtime using S3 zip file ===")
+        
+        # Get required configuration
+        role_arn = os.getenv("TEST_ROLE_ARN")
+        region = cognito_config["region"]
+        
+        # Get S3 bucket name from terraform outputs
+        bucket_name = deployed_resources.get("agentcore_runtime_zip_files_bucket_id")
+        
+        assert role_arn, (
+            "TEST_ROLE_ARN environment variable is required for runtime tests. "
+            "Ensure this is set in the .env file with a valid IAM role ARN."
+        )
+        assert bucket_name, (
+            "S3 bucket for runtime zip files not found in deployed resources. "
+            "Ensure AgentCore infrastructure is deployed and terraform outputs are available."
+        )
+        
+        runtime_id = None
+        runtime_arn = None
+        zip_file_path = None
+        s3_zip_path = None
+        
+        try:
+            # Get JWT token for authentication
+            jwt_token = get_jwt_token()
+            assert jwt_token, "Failed to obtain JWT token for runtime creation"
+            
+            # Generate unique suffix to prevent duplicate name conflicts
+            unique_suffix = uuid4().hex[-6:]
+            runtime_name = f"system_test_runtime_{unique_suffix}"
+            
+            # Create zip file from test_deployment directory (same as unit tests)
+            print("Creating runtime zip file...")
+            zip_file_path = create_runtime_zip_file(unique_suffix)
+            
+            # Upload zip file to S3 (same bucket as terraform created)
+            print("Uploading zip file to S3...")
+            s3_zip_path = upload_zip_to_s3(zip_file_path, bucket_name, unique_suffix, region)
+            
+            # Clean up local zip file after upload
+            cleanup_local_zip_file(zip_file_path)
+            
+            # Prepare request payload for runtime creation using S3 configuration
+            create_payload = {
+                "roleArn": role_arn,
+                "agentRuntimeName": runtime_name,
+                "agentRuntimeArtifact": {
+                    "s3Configuration": {
+                        "s3ZipPath": s3_zip_path,
+                        "entrypoint": "test_entrypoint"  # Same as unit tests
+                    }
+                },
+                "networkConfiguration": {
+                    "networkMode": "PUBLIC"
+                },
+                "authorizerConfiguration": {
+                    "customJWTAuthorizer": {
+                        "discoveryUrl": f"https://cognito-idp.{region}.amazonaws.com/{cognito_config['user_pool_id']}/.well-known/openid-configuration",
+                        "allowedClients": [cognito_config['client_id']]
+                    }
+                },
+                "description": "JWT-authenticated system test runtime using S3 zip deployment",
+                "environmentVariables": {
+                    "TEST_VAR": "system_test_value",
+                    "TEST_ID": unique_suffix
+                }
+            }
+            
+            # Make JWT-authenticated request to create runtime
+            headers = {
+                "Authorization": f"Bearer {jwt_token}",
+                "Content-Type": "application/json"
+            }
+            
+            create_url = f"https://bedrock-agentcore-control.{region}.amazonaws.com/agent-runtimes"
+            print(f"Creating runtime via POST {create_url}")
+            
+            response = requests.post(
+                create_url,
+                headers=headers,
+                json=create_payload,
+                timeout=60
+            )
+            
+            if response.status_code not in [200, 201]:
+                pytest.fail(f"Runtime creation failed with status {response.status_code}: {response.text}")
+            
+            create_response = response.json()
+            runtime_id = create_response["agentRuntimeId"]
+            runtime_arn = create_response["agentRuntimeArn"]
+            
+            print(f"✅ Created JWT-authenticated runtime: {runtime_id}")
+            print(f"Runtime ARN: {runtime_arn}")
+            print(f"Initial status: {create_response['status']}")
+            
+            # Wait for runtime to be fully ready
+            print("Waiting for runtime to be ready...")
+            ready = False
+            max_attempts = 12
+            attempt = 0
+            
+            while not ready and attempt < max_attempts:
+                attempt += 1
+                try:
+                    time.sleep(10)  # Wait between status checks
+                    
+                    # Get fresh JWT token for status check
+                    status_jwt_token = get_jwt_token()
+                    status_headers = {
+                        "Authorization": f"Bearer {status_jwt_token}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    get_url = f"https://bedrock-agentcore-control.{region}.amazonaws.com/agent-runtimes/{runtime_id}"
+                    get_response = requests.get(get_url, headers=status_headers, timeout=30)
+                    
+                    if get_response.status_code == 200:
+                        runtime_data = get_response.json()
+                        status = runtime_data["status"]
+                        print(f"Runtime status (attempt {attempt}/{max_attempts}): {status}")
+                        
+                        if status == "READY":
+                            ready = True
+                            print(f"✅ Runtime {runtime_id} is now READY and ready for use")
+                        elif status in ["FAILED", "DELETED"]:
+                            pytest.fail(f"Runtime {runtime_id} entered {status} state")
+                    else:
+                        print(f"Status check failed with {get_response.status_code}: {get_response.text}")
+                        
+                except Exception as e:
+                    print(f"Error checking runtime status: {e}")
+                    
+            if not ready:
+                print(f"Warning: Runtime {runtime_id} did not reach READY state within timeout")
+                print("Proceeding with tests anyway as runtime might still become active")
+                
+        except Exception as e:
+            pytest.fail(f"Failed to create session runtime: {e}")
+        
+        # Return the runtime details for tests to use
+        yield {
+            "runtime_id": runtime_id,
+            "runtime_arn": runtime_arn
+        }
+    
+        # Cleanup after all tests are done
+        if runtime_id and DELETE_AT_END:
+            print(f"\n=== Cleaning up session runtime {runtime_id} ===")
+            try:
+                # Get fresh JWT token for deletion
+                delete_jwt_token = get_jwt_token()
+                delete_headers = {
+                    "Authorization": f"Bearer {delete_jwt_token}",
+                    "Content-Type": "application/json"
+                }
+                
+                delete_url = f"https://bedrock-agentcore-control.{region}.amazonaws.com/agent-runtimes/{runtime_id}"
+                delete_response = requests.delete(delete_url, headers=delete_headers, timeout=30)
+                
+                if delete_response.status_code in [200, 202, 204]:
+                    print(f"✅ Successfully cleaned up runtime: {runtime_id}")
+                else:
+                    print(f"Warning: Runtime cleanup returned status {delete_response.status_code}: {delete_response.text}")
+                    
+            except Exception as e:
+                print(f"Warning: Failed to clean up runtime {runtime_id}: {e}")
+            
+            # Also cleanup S3 zip file
+            if s3_zip_path and bucket_name:
+                try:
+                    s3_client = boto3.client('s3', region_name=region)
+                    s3_key = s3_zip_path.replace(f's3://{bucket_name}/', '')
+                    s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
+                    print(f"✅ Cleaned up S3 zip file: {s3_zip_path}")
+                except Exception as e:
+                    print(f"Warning: Failed to cleanup S3 zip file {s3_zip_path}: {e}")
+
+
+# Pytest configuration
+def pytest_configure(config):
+    """Configure pytest with custom markers."""
+    config.addinivalue_line(
+        "markers", 
+        "lambda_test: mark test as a Lambda function test"
+    )
+    config.addinivalue_line(
+        "markers", 
+        "ecs_test: mark test as an ECS service test"
+    )
+    config.addinivalue_line(
+        "markers", 
+        "e2e_test: mark test as an end-to-end test"
+    )
+    config.addinivalue_line(
+        "markers",
+        "slow: mark test as slow running"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Modify test collection to add markers based on test names."""
+    for item in items:
+        # Add markers based on test file names
+        if "lambda" in item.nodeid:
+            item.add_marker(pytest.mark.lambda_test)
+        # if "ecs" in item.nodeid:
+        #     item.add_marker(pytest.mark.ecs_test)
+        # if "e2e" in item.nodeid or "end_to_end" in item.nodeid:
+        #     item.add_marker(pytest.mark.e2e_test)
+        
+        # Mark tests that might be slow
+        if any(keyword in item.nodeid for keyword in ["load", "performance", "concurrent", "stress"]):
+            item.add_marker(pytest.mark.slow)

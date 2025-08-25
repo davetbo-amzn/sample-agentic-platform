@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional, Literal, Any
 from pydantic import BaseModel, Field
+from enum import Enum
 
 # Service auth result - provider agnostic
 class ServiceAuth(BaseModel):
@@ -20,7 +21,8 @@ class UserAuth(BaseModel):
     groups: List[str] = Field(default_factory=list)  # User groups/roles
     provider: str = "generic"  # Which auth provider (cognito, okta, etc)
     metadata: Dict[str, Any] = Field(default_factory=dict)  # Provider-specific attributes
-
+    jwt: Optional[str] = None
+    
 # The main auth result as a tagged union
 class AgenticPlatformAuth(BaseModel):
     """Authentication result with discriminated union pattern"""
@@ -36,3 +38,10 @@ class AgenticPlatformAuth(BaseModel):
     @classmethod
     def from_user(cls, user: UserAuth) -> "AgenticPlatformAuth":
         return cls(type="user", user=user)
+
+class AuthProviderType(Enum):
+    AGENTPATH = "AGENTPATH" # the default Cognito implementation
+    AGENTCORE = "AGENTCORE"
+
+    def __str__(auth_provider_type):
+        return str(auth_provider_type)

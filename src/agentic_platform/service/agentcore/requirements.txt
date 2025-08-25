@@ -1,0 +1,8 @@
+boto3>=1.40
+bedrock-agentcore
+pydantic>=2.10.6
+fastapi
+uvicorn
+python-dotenv
+PyJWT
+requests

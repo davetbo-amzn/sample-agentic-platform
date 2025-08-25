@@ -247,21 +247,21 @@ class CreateMemoryRequest(BaseModel):
 class CreateMemoryResponse(BaseModel):
     memory: Memory
 
-class CreateAgentCoreMemoryProviderRequest(BaseModel):
+class CreateMemoryProviderRequest(BaseModel):
     environment: str='AgentCore-AgentPath'
     retention_days: int=30,
 
 class CreateAgentCoreMemoryProviderResponse(BaseModel):
     memory_id: str
 
-class DeleteAgentCoreMemoryProviderRequest(BaseModel):
+class DeleteMemoryProviderRequest(BaseModel):
     memory_id: str
 
 class DeleteAgentCoreMemoryProviderResponse(BaseModel):
     memory_id: str
 
 
-class UpdateAgentCoreMemoryProviderRequest(BaseModel):
+class UpdateMemoryProviderRequest(BaseModel):
     memory_id: str
     description: str=None
     event_expiry_duration: int=None
