@@ -4,13 +4,26 @@ import os
 import json
 import argparse
 import sys
+import hmac
+import hashlib
+import base64
 
-def get_token(client_id=None, username=None, password=None):
+REGION=os.getenv('AWS_REGION')
+
+def calculate_secret_hash(username, client_id, client_secret):
+    """Calculate the SECRET_HASH for Cognito authentication"""
+    message = bytes(username + client_id, 'utf-8')
+    key = bytes(client_secret, 'utf-8')
+    secret_hash = base64.b64encode(hmac.new(key, message, digestmod=hashlib.sha256).digest()).decode()
+    return secret_hash
+
+def get_token(client_id=None, username=None, password=None, client_secret=None):
     """Get Cognito access token using provided or environment credentials"""
     # Use provided values or get from environment
     client_id = client_id or os.environ.get("COGNITO_CLIENT_ID")
     username = username or os.environ.get("COGNITO_USERNAME") 
     password = password or os.environ.get("COGNITO_PASSWORD")
+    client_secret = client_secret or os.environ.get("COGNITO_CLIENT_SECRET")
     
     # Check if we have all required values
     if not all([client_id, username, password]):
@@ -25,17 +38,33 @@ def get_token(client_id=None, username=None, password=None):
     
     try:
         # Create Cognito client
-        client = boto3.client('cognito-idp')
+        client = boto3.client('cognito-idp', region_name=REGION)
         
-        # Authenticate with username and password
-        response = client.initiate_auth(
-            ClientId=client_id,
-            AuthFlow='USER_PASSWORD_AUTH',
-            AuthParameters={
-                'USERNAME': username,
-                'PASSWORD': password
-            }
-        )
+        # Prepare authentication parameters
+        auth_parameters = {
+            'USERNAME': username,
+            'PASSWORD': password
+        }
+        
+        # Add SECRET_HASH if client secret is provided
+        if client_secret:
+            secret_hash = calculate_secret_hash(username, client_id, client_secret)
+            auth_parameters['SECRET_HASH'] = secret_hash
+        
+        # Try authentication with current parameters
+        try:
+            response = client.initiate_auth(
+                ClientId=client_id,
+                AuthFlow='USER_PASSWORD_AUTH',
+                AuthParameters=auth_parameters
+            )
+        except client.exceptions.NotAuthorizedException as e:
+            if "SECRET_HASH was not received" in str(e):
+                print("Client requires SECRET_HASH but COGNITO_CLIENT_SECRET not provided.")
+                print("Please set COGNITO_CLIENT_SECRET environment variable or provide --client-secret argument.")
+                sys.exit(1)
+            else:
+                raise e
         
         # Extract the token
         token = response['AuthenticationResult']['AccessToken']
@@ -61,12 +90,13 @@ if __name__ == "__main__":
     parser.add_argument('--client-id', help='Cognito client ID')
     parser.add_argument('--username', help='Cognito username')
     parser.add_argument('--password', help='Cognito password')
+    parser.add_argument('--client-secret', help='Cognito client secret')
     parser.add_argument('--quiet', action='store_true', help='Only output the token')
     
     args = parser.parse_args()
     
     # Get token
-    token = get_token(args.client_id, args.username, args.password)
+    token = get_token(args.client_id, args.username, args.password, args.client_secret)
     
     # If quiet mode, just print the token
     if args.quiet:

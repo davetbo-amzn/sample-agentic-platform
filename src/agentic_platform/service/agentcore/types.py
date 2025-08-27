@@ -19,6 +19,12 @@ class AgentRuntimeRequest(BaseModel):
 class AgentRuntimeResponse(BaseModel):
     status_code: int
     result: Any
+    
+    def to_dict(self):
+        return {
+            'status_code': self.status_code,
+            'result': self.result
+        }
 
 #  Memory Provider Types
 class MemoryEvent(BaseModel):
@@ -87,7 +93,7 @@ class CreateEventResponse(BaseModel):
     branch: Dict[str, str]
 
 class CreateAgentRuntimeRequest(BaseModel):
-    s3_zip_path: str
+    agent_description: str
     name: str
     ecr_repo_uri: Optional[str] = None
     entrypoint: Optional[str] = 'entrypoint.py'
@@ -110,16 +116,22 @@ class AgentRuntime(BaseModel):
     agent_runtime_name: str
     # description: Ostr
     status: AgentRuntimeStatus
-    created_at: Optional[str] = None
-    last_updated_at: Optional[str] = None
-    workload_identity_details: Optional[Dict[str, str]] = None
+    # created_at: Optional[str] = None
     # last_updated_at: Optional[str] = None
-    # role_arn: Optional[str] = None
-    # agent_runtime_artifact: Optional[Dict[str, Any]] = None
-    # network_configuration: Optional[Dict[str, str]] = None
-    # protocol_configuration: Optional[Dict[str, str]] = None
-    # environment_variables: Optional[Dict[str, str]] = None
-    # authorizer_configuration: Optional[Dict[str, Any]] = None
+    created_at: Optional[datetime] = None
+    last_updated_at: Optional[datetime] = None
+    workload_identity_details: Optional[Dict[str, str]] = None
+    def to_dict(self):
+        return {
+            "agent_runtime_arn": self.agent_runtime_arn,
+            "agent_runtime_id": self.agent_runtime_id,
+            "agent_runtime_version": self.agent_runtime_version,
+            "agent_runtime_name": self.agent_runtime_name,
+            "status": self.status,
+            "created_at": None if not self.created_at else self.created_at.isoformat(),
+            "last_updated_at": None if not self.last_updated_at else self.last_updated_at.isoformat(),
+            "workload_identity_details": self.workload_identity_details
+        }
     
 class CreateAgentRuntimeResponse(BaseModel):
     agent_runtime_arn: str
@@ -128,12 +140,27 @@ class CreateAgentRuntimeResponse(BaseModel):
     created_at: str
     status: AgentRuntimeStatus
     workload_identity_details: Dict[str, str]
+    
+    def to_dict(self):
+        return {
+            'agent_runtime_arn': self.agent_runtime_arn,
+            'agent_runtime_id': self.agent_runtime_id,
+            'agent_runtime_version': self.agent_runtime_version,
+            'created_at': self.created_at,
+            'status': self.status.value if isinstance(self.status, AgentRuntimeStatus) else self.status,
+            'workload_identity_details': self.workload_identity_details
+        }
 
 class DeleteAgentRuntimeRequest(BaseModel):
     agent_runtime_id: str
 
 class DeleteAgentRuntimeResponse(BaseModel):
     status: AgentRuntimeStatus
+    
+    def to_dict(self):
+        return {
+            'status': self.status.value if isinstance(self.status, AgentRuntimeStatus) else self.status
+        }
 
 class DeleteMemoryProviderRequest(BaseModel):
     memory_id: str
@@ -160,6 +187,23 @@ class GetAgentRuntimeResponse(BaseModel):
     protocol_configuration: Dict[str, str] = None
     environment_variables: Dict[str, str] = None
     authorizer_configuration: Dict[str, Any] = None
+    def to_dict(self):
+        return {
+            'agent_runtime_arn': self.agent_runtime_arn,
+            'agent_runtime_id': self.agent_runtime_id,
+            'agent_runtime_version': self.agent_runtime_version,
+            'agent_runtime_name': self.agent_runtime_name,
+            'status': self.status.value if isinstance(self.status, AgentRuntimeStatus) else self.status,
+            'workload_identity_details': self.workload_identity_details,
+            'created_at': self.created_at,
+            'last_updated_at': self.last_updated_at,
+            'role_arn': self.role_arn,
+            'agent_runtime_artifact': self.agent_runtime_artifact,
+            'network_configuration': self.network_configuration,
+            'protocol_configuration': self.protocol_configuration,
+            'environment_variables': self.environment_variables,
+            'authorizer_configuration': self.authorizer_configuration
+        }
     
 
 class GetMemoryProviderRequest(BaseModel):
@@ -231,6 +275,12 @@ class ListAgentRuntimesRequest(BaseModel):
 class ListAgentRuntimesResponse(BaseModel):
     agent_runtimes: List[AgentRuntime]
     next_token: str = None
+    
+    def to_dict(self):
+        return {
+            'agent_runtimes': [runtime.to_dict() for runtime in self.agent_runtimes],
+            'next_token': self.next_token
+        }
 
 class UpdateMemoryProviderRequest(BaseModel):
     memory_id: str
@@ -272,3 +322,14 @@ class UpdateAgentRuntimeResponse(BaseModel):
     created_at: str
     last_updated_at: str
     status: str
+    
+    def to_dict(self):
+        return {
+            'agent_runtime_arn': self.agent_runtime_arn,
+            'agent_runtime_id': self.agent_runtime_id,
+            'workload_identity_details': self.workload_identity_details,
+            'agent_runtime_version': self.agent_runtime_version,
+            'created_at': self.created_at,
+            'last_updated_at': self.last_updated_at,
+            'status': self.status
+        }

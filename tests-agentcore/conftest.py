@@ -314,77 +314,6 @@ def get_jwt_token():
         return None
 
 
-def create_runtime_zip_file(unique_suffix: str) -> str:
-    """Create a zip file from the test_deployment directory for runtime creation.
-    
-    Args:
-        unique_suffix: Unique identifier to include in zip filename
-        
-    Returns:
-        Path to the created zip file
-    """
-    # Path to the unit test deployment directory that contains the runtime code
-    test_deployment_dir = Path(__file__).parent / "unit" / "test_deployment"
-    
-    if not test_deployment_dir.exists():
-        raise FileNotFoundError(f"Test deployment directory not found: {test_deployment_dir}")
-    
-    # Clean up any pycache directories like unit tests do
-    pycache_dir = test_deployment_dir / "__pycache__"
-    if pycache_dir.exists():
-        print(f"Removing previous pycache files from {pycache_dir}")
-        shutil.rmtree(pycache_dir)
-    
-    # Create zip file name with unique suffix
-    zip_filename = f"shared_test_runtime_{unique_suffix}"
-    zip_path = f"./{zip_filename}.zip"
-    
-    print(f"Creating {zip_path} from {test_deployment_dir}")
-    
-    # Create the zip file (same approach as unit tests)
-    result = shutil.make_archive(zip_filename, 'zip', test_deployment_dir)
-    print(f"Created zip file: {result}")
-    
-    return result
-
-
-def upload_zip_to_s3(zip_file_path: str, bucket_name: str, unique_suffix: str, region: str) -> str:
-    """Upload zip file to S3 bucket and return the S3 path.
-    
-    Args:
-        zip_file_path: Local path to the zip file
-        bucket_name: S3 bucket name
-        unique_suffix: Unique identifier for the S3 key
-        region: AWS region
-        
-    Returns:
-        S3 path in s3://bucket/key format
-    """
-    s3_client = boto3.client('s3', region_name=region)
-    
-    # Use same S3 key structure as unit tests
-    s3_key = f's3_zip_files/shared_test_runtime_{unique_suffix}.zip'
-    
-    print(f"Uploading {zip_file_path} to s3://{bucket_name}/{s3_key}")
-    
-    try:
-        s3_client.upload_file(zip_file_path, bucket_name, s3_key)
-        s3_path = f's3://{bucket_name}/{s3_key}'
-        print(f"Successfully uploaded to {s3_path}")
-        return s3_path
-    except Exception as e:
-        print(f"Failed to upload to S3: {e}")
-        raise
-
-
-def cleanup_local_zip_file(zip_file_path: str):
-    """Clean up local zip file after upload."""
-    try:
-        if os.path.exists(zip_file_path):
-            os.remove(zip_file_path)
-            print(f"Cleaned up local zip file: {zip_file_path}")
-    except Exception as e:
-        print(f"Warning: Failed to cleanup zip file {zip_file_path}: {e}")
 
 
 def _wait_for_runtime_active(client, agent_runtime_id, max_wait_time=300):
@@ -598,43 +527,29 @@ def session_runtime(agentcore_control_client, deployed_resources):
                         print(f"Existing runtime {runtime.agent_runtime_id} not ready or failed: {e}")
                         continue
 
-            # If we get here we're going to create a new one
+            # If we get here we're going to create a new one using the new create_agent_runtime function
             unique_suffix = uuid4().hex[-6:]
             test_runtime_name = f"{TEST_RUNTIME_NAME_PREFIX}_{unique_suffix}"
             print(f"Creating test_runtime_name {test_runtime_name}")
-            test_dir = './unit/test_deployment'
-            if os.path.isdir(f"{test_dir}/__pycache__"):
-                print(f"Removing previous pycache files.")
-                shutil.rmtree(f"{test_dir}/__pycache__")
             
-            print(f"os.getcwd() = {os.getcwd()}")
-            print(f"Creating {test_dir}/create_agent_runtime_test.zip")
-            result = shutil.make_archive('create_agent_runtime_test', 'zip', test_dir)
-            print(f"Result from make_archive: {result}")
-            s3_client = boto3.client('s3', region_name=AWS_REGION)
-            source_zip_file = f"./create_agent_runtime_test.zip"
-            s3_key = 's3_zip_files/create_agent_runtime_test.zip'
-            print(f"Uploading {source_zip_file} to s3://{TEST_BUCKET}/{s3_key}")
-            s3_client.upload_file(
-                source_zip_file,
-                TEST_BUCKET,
-                s3_key
-            )
+            # Use the new create_agentcore_runtime method that uses local templates and agentcore CLI
             create_request = CreateAgentRuntimeRequest(
-                s3_zip_path=f's3://{TEST_BUCKET}/{s3_key}',
-                update_on_conflict=True,
-                name='test_entrypoint'
+                agent_description="A test agent for unit and system testing using the single agent deployment template",
+                name=test_runtime_name,
+                entrypoint="entrypoint.py",
+                protocol="mcp"
             )
 
-            print(f"sending request to create_agentcore_runtime {create_request}")
+            print(f"Sending request to create_agentcore_runtime {create_request}")
             runtime = AgentCoreRuntimeClient.create_agentcore_runtime(create_request)
             print(f"Got agentcore runtime result {runtime}")
             agent_runtime_id = runtime.agent_runtime_id
             print(f"Created new test runtime with ID: {agent_runtime_id}")
-            # Wait for runtime to be ready - CRITICAL: must be READY before yielding
+            
+            # Wait for runtime to be ready using the AgentCoreRuntimeClient's wait method
             print(f"Waiting for runtime {agent_runtime_id} to be READY...")
-            runtime_data = _wait_for_runtime_active(agentcore_control_client, agent_runtime_id)
-            print(f"Runtime {agent_runtime_id} is now READY: {runtime_data}")
+            runtime = AgentCoreRuntimeClient.wait_for_runtime_ready(agent_runtime_id, max_wait_time=600)
+            print(f"Runtime {agent_runtime_id} is now READY: {runtime}")
             print(f"Yielding runtime with id: {agent_runtime_id}")
             yield runtime
         finally:

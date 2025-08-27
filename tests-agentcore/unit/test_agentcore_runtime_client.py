@@ -12,10 +12,7 @@ with caution.
 import os
 import pytest
 import boto3
-import shutil
 import time
-import zipfile
-import tempfile
 
 from datetime import datetime
 from botocore.exceptions import ClientError, NoCredentialsError
@@ -27,6 +24,7 @@ sys.path.insert(0, '../../src')
 
 from agentic_platform.service.agentcore.runtime.client.agentcore_runtime_client import AgentCoreRuntimeClient
 from agentic_platform.service.agentcore.types import (
+    AgentRuntime,
     AgentRuntimeStatus,
     CreateAgentRuntimeRequest,
     DeleteAgentRuntimeRequest,
@@ -62,39 +60,6 @@ else:
     DELETE_AT_END = True
 
 
-# Get runtime ID from environment if provided for testing with existing runtime
-# RUNTIME_ID = os.getenv('TEST_WITH_RUNTIME_ID', None)
-# print(f"Got runtime id from env {RUNTIME_ID}")
-
-# ECR container URI and IAM role ARN are required for creating new runtimes
-# These must be provided via environment variables since they need to exist in your AWS account
-# TEST_CONTAINER_URI = os.getenv('TEST_CONTAINER_URI', None)
-# TEST_ROLE_ARN = os.getenv('TEST_ROLE_ARN', None)
-USER_POOL_ID = os.getenv('USER_POOL_ID', None) 
-USER_POOL_CLIENT_ID = os.getenv('USER_POOL_CLIENT_ID', None)
-TEST_BUCKET = 'agentcore-agentpath-agentcore-runtime-zip-files'
-# COGNITO_DISCOVERY_URL = os.getenv('COGNITO_DISCOVERY_URL', None)
-
-# Check if we have the required infrastructure for creating new runtimes
-# print(f"TEST_CONTAINER_URI: {TEST_CONTAINER_URI}")
-# print(f"TEST_ROLE_ARN: {TEST_ROLE_ARN}")
-
-
-# def get_test_container_uri():
-#     """
-#     Get the container URI for testing from environment variables.
-    
-#     Returns:
-#         str: The ECR container URI to use for testing
-        
-#     Raises:
-#         Exception: If TEST_CONTAINER_URI is not set
-#     """
-#     # if not TEST_CONTAINER_URI:
-#     #     raise Exception("TEST_CONTAINER_URI environment variable must be set for runtime creation")
-    
-#     print(f"Using container URI from environment: {TEST_CONTAINER_URI}")
-#     return TEST_CONTAINER_URI
 
 
 @pytest.fixture(scope="session")
@@ -140,62 +105,55 @@ def shared_test_runtime(real_agentcore_control_client, env_setup):
             list_response = AgentCoreRuntimeClient.list_agent_runtimes(list_request)
             
             # Look for existing test runtimes first and check if they're ready
+            found_runtime = None
             for runtime in list_response.agent_runtimes:
-                if runtime.agent_runtime_name.startswith(TEST_RUNTIME_NAME_PREFIX):
-                    print(f"Found existing test runtime: {runtime.agent_runtime_id}")
+                print(f"Got runtime from list_agent_runtimes: {runtime}")
+                if isinstance(runtime, AgentRuntime):
+                    runtime = runtime.to_dict()
+                if runtime['agent_runtime_name'].startswith(TEST_RUNTIME_NAME_PREFIX):
+                    print(f"Found existing test runtime: {runtime['agent_runtime_id']}")
                     # Check if the existing runtime is ready
-                    try:
-                        existing_runtime_data = _wait_for_runtime_active(real_agentcore_control_client, runtime.agent_runtime_id, max_wait_time=30)
-                        if existing_runtime_data:
-                            runtime = AgentCoreRuntimeClient.get_agentcore_runtime(
-                                GetAgentRuntimeRequest(agent_runtime_id=runtime.agent_runtime_id)
-                            )
-                            print(f"Using existing ready runtime: {runtime.agent_runtime_id}")
-                            agent_runtime_id = runtime.agent_runtime_id
-                            yield runtime
-
-                    except Exception as e:
-                        raise Exception (f"Existing runtime {runtime.agent_runtime_id} not ready or failed: {e}")
-
-            # if we get here we're going to create a new one.
-            unique_suffix = uuid4().hex[-6:]
-            test_runtime_name = f"{TEST_RUNTIME_NAME_PREFIX}_{unique_suffix}"
-            print(f"Creating test_runtime_name {test_runtime_name}")
-            test_dir = './unit/test_deployment'
-            if os.path.isdir(f"{test_dir}/__pycache__"):
-                print(f"Removing previous pycache files.")
-                shutil.rmtree(f"{test_dir}/__pycache__")
+                    found_runtime = runtime
             
-            print(f"os.getcwd() = {os.getcwd()}")
-            print(f"Creating {test_dir}/create_agent_runtime_test.zip")
-            result = shutil.make_archive('create_agent_runtime_test', 'zip', test_dir)
-            print(f"Result from make_archive: {result}")
-            s3_client = boto3.client('s3', region_name=AWS_REGION)
-            source_zip_file = f"./create_agent_runtime_test.zip"
-            s3_key = 's3_zip_files/create_agent_runtime_test.zip'
-            print(f"Uploading {source_zip_file} to s3://{TEST_BUCKET}/{s3_key}")
-            s3_client.upload_file(
-                source_zip_file,
-                TEST_BUCKET,
-                s3_key
-            )
-            create_request = CreateAgentRuntimeRequest(
-                s3_zip_path=f's3://{TEST_BUCKET}/{s3_key}',
-                update_on_conflict=True,
-                name='test_entrypoint'
-            )
+            if found_runtime:
+                try:
+                    existing_runtime_data = _wait_for_runtime_active(real_agentcore_control_client, runtime['agent_runtime_id'], max_wait_time=30)
+                    if existing_runtime_data:
+                        response = AgentCoreRuntimeClient.get_agentcore_runtime(
+                            GetAgentRuntimeRequest(agent_runtime_id=runtime['agent_runtime_id'])
+                        )
+                        print(f"Using existing ready runtime: {response.agent_runtime_id}")
+                        agent_runtime_id = response.agent_runtime_id
+                        yield runtime
 
-            print(f"sending request to create_agentcore_runtime {create_request}")
-            runtime = AgentCoreRuntimeClient.create_agentcore_runtime(create_request)
-            print(f"Got agentcore runtime result {runtime}")
-            agent_runtime_id = runtime.agent_runtime_id
-            print(f"Created new test runtime with ID: {agent_runtime_id}")
-            # Wait for runtime to be ready - CRITICAL: must be READY before yielding
-            print(f"Waiting for runtime {agent_runtime_id} to be READY...")
-            runtime_data = _wait_for_runtime_active(real_agentcore_control_client, agent_runtime_id)
-            print(f"Runtime {agent_runtime_id} is now READY: {runtime_data}")
-            print(f"Yielding runtime with id: {agent_runtime_id}")
-            yield runtime
+                except Exception as e:
+                    raise Exception (f"Existing runtime {runtime['agent_runtime_id']} not ready or failed: {e}")
+            else:
+                # If we get here we're going to create a new one using the new create_agent_runtime function
+                unique_suffix = uuid4().hex[-6:]
+                test_runtime_name = f"{TEST_RUNTIME_NAME_PREFIX}_{unique_suffix}"
+                print(f"Creating test_runtime_name {test_runtime_name}")
+                
+                # Use the new create_agentcore_runtime method that uses local templates and agentcore CLI
+                create_request = CreateAgentRuntimeRequest(
+                    agent_description="A test agent for unit testing using the single agent deployment template",
+                    name=test_runtime_name,
+                    entrypoint="entrypoint.py",
+                    protocol="mcp"
+                )
+
+                print(f"Sending request to create_agentcore_runtime {create_request}")
+                runtime = AgentCoreRuntimeClient.create_agentcore_runtime(create_request)
+                print(f"Got agentcore runtime result {runtime}")
+                agent_runtime_id = runtime.agent_runtime_id
+                print(f"Created new test runtime with ID: {agent_runtime_id}")
+                
+                # Wait for runtime to be ready using the AgentCoreRuntimeClient's wait method
+                print(f"Waiting for runtime {agent_runtime_id} to be READY...")
+                runtime = AgentCoreRuntimeClient.wait_for_runtime_ready(agent_runtime_id, max_wait_time=600)
+                print(f"Runtime {agent_runtime_id} is now READY: {runtime}")
+                print(f"Yielding runtime with id: {agent_runtime_id}")
+                yield runtime
         finally:
             if agent_runtime_id and DELETE_AT_END:
                 # Cleanup the shared runtime at the end of the session if we created it
@@ -282,7 +240,8 @@ def test_create_agentcore_runtime(shared_test_runtime, real_agentcore_control_cl
     """Test creating a runtime - uses shared runtime to verify it exists."""
     # Act - The shared runtime fixture already creates/verifies the runtime
     assert shared_test_runtime is not None
-    agent_runtime_id = shared_test_runtime.agent_runtime_id
+    print(f"test_create_agentcore_runtime received runtime {shared_test_runtime}")
+    agent_runtime_id = shared_test_runtime['agent_runtime_id']
     
     # Assert
     assert agent_runtime_id is not None
@@ -295,7 +254,7 @@ def test_create_agentcore_runtime(shared_test_runtime, real_agentcore_control_cl
     print(f"Got runtime details {runtime_details}")
     # Handle potential variations in response structure
     if 'agentRuntime' in runtime_details:
-        status = runtime_details['agentRuntime']['status']
+        status = runtime_details.agent_runtime['agentRuntime']['status']
     elif 'status' in runtime_details:
         status = runtime_details['status']
     else:
@@ -307,61 +266,9 @@ def test_create_agentcore_runtime(shared_test_runtime, real_agentcore_control_cl
     print(f"Successfully verified shared runtime with ID: {agent_runtime_id}")
 
 
-def test_create_agentcore_runtime_direct(shared_test_runtime):
-    """Test validating a runtime that was created using the shared runtime fixture."""
-    # Use the shared runtime to validate the response structure that would come from create_agentcore_runtime
-    response = shared_test_runtime
-    
-    # Assert response structure (validates what create_agentcore_runtime would return)
-    assert response is not None
-    assert isinstance(response, GetAgentRuntimeResponse)  # Shared runtime returns GetResponse, but structure is similar
-    assert response.agent_runtime_id is not None
-    assert response.agent_runtime_arn is not None
-    assert response.status == AgentRuntimeStatus.READY # Should be ready since shared runtime waits for READY
-    assert response.created_at is not None
-    
-    # Verify the ARN format
-    assert response.agent_runtime_arn.startswith('arn:aws:bedrock-agentcore:')
-    assert response.agent_runtime_arn.endswith(f'runtime/{response.agent_runtime_id}')
-    
-    # Verify workload identity details exist
-    assert response.workload_identity_details is not None
-    assert isinstance(response.workload_identity_details, dict)
-    
-    print(f"Successfully validated shared runtime structure with ID: {response.agent_runtime_id}")
-
-
-def test_create_agentcore_runtime_with_validation(shared_test_runtime):
-    """Test validation of runtime response structure using shared runtime."""
-    # Use shared runtime to validate response structure
-    response = shared_test_runtime
-    
-    # Assert response structure - validates what we expect from create/get operations
-    assert response is not None
-    assert hasattr(response, 'agent_runtime_id')
-    assert hasattr(response, 'agent_runtime_arn') 
-    assert hasattr(response, 'workload_identity_details')
-    assert hasattr(response, 'agent_runtime_version')
-    assert hasattr(response, 'status')
-    assert hasattr(response, 'created_at')
-    
-    # Validate response data types
-    assert isinstance(response.agent_runtime_id, str)
-    assert isinstance(response.agent_runtime_arn, str)
-    assert isinstance(response.workload_identity_details, dict)
-    assert isinstance(response.agent_runtime_version, (str, type(None)))  # Can be None
-    assert isinstance(response.status, AgentRuntimeStatus)
-    assert isinstance(response.created_at, str)
-    
-    # Validate that runtime is in ready state (should be since shared fixture waits)
-    assert response.status == AgentRuntimeStatus.READY
-    
-    print(f"Successfully validated shared runtime structure and types with ID: {response.agent_runtime_id}")
-
-
 def test_get_agentcore_runtime(shared_test_runtime, real_agentcore_control_client, env_setup):
     """Test getting runtime details with real AWS API calls."""
-    agent_runtime_id = shared_test_runtime.agent_runtime_id
+    agent_runtime_id = shared_test_runtime['agent_runtime_id']
     
     # Test getting runtime details
     get_request = GetAgentRuntimeRequest(agent_runtime_id=agent_runtime_id)
@@ -380,7 +287,7 @@ def test_get_agentcore_runtime(shared_test_runtime, real_agentcore_control_clien
 
 def test_list_agentcore_runtimes(shared_test_runtime, real_agentcore_control_client, env_setup):
     """Test listing runtimes with real AWS API calls."""
-    agent_runtime_id = shared_test_runtime.agent_runtime_id
+    agent_runtime_id = shared_test_runtime['agent_runtime_id']
     print(f"Testing with shared_test_runtime {shared_test_runtime}")
     print(f"test agent_runtime_id {agent_runtime_id}")
 

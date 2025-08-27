@@ -66,8 +66,8 @@ class AgentCoreRuntimeController:
         
         return AgentRuntimeResponse(
             status_code=200,
-            result=result.__dict__
-        ).__dict__
+            result=result.to_dict()
+        ).to_dict()
     
     @staticmethod
     def create_agentcore_runtime(request: CreateAgentRuntimeRequest) -> CreateAgentRuntimeResponse:

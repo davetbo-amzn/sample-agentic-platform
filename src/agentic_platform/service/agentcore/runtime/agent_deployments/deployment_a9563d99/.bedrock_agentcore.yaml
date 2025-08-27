@@ -1,0 +1,34 @@
+default_agent: test_runtime_466b5f
+agents:
+  test_runtime_466b5f:
+    name: test_runtime_466b5f
+    entrypoint: entrypoint.py
+    platform: linux/arm64
+    container_runtime: finch
+    aws:
+      execution_role: arn:aws:iam::165361166149:role/AmazonBedrockAgentCoreSDKRuntime-us-west-2-57a50c8e2b
+      execution_role_auto_create: false
+      account: '165361166149'
+      region: us-west-2
+      ecr_repository: 165361166149.dkr.ecr.us-west-2.amazonaws.com/bedrock-agentcore-test_runtime_466b5f
+      ecr_auto_create: false
+      network_configuration:
+        network_mode: PUBLIC
+      protocol_configuration:
+        server_protocol: MCP
+      observability:
+        enabled: false
+    bedrock_agentcore:
+      agent_id: test_runtime_466b5f-pFY3gaArMi
+      agent_arn: arn:aws:bedrock-agentcore:us-west-2:165361166149:runtime/test_runtime_466b5f-pFY3gaArMi
+      agent_session_id: null
+    codebuild:
+      project_name: bedrock-agentcore-test_runtime_466b5f-builder
+      execution_role: arn:aws:iam::165361166149:role/AmazonBedrockAgentCoreSDKCodeBuild-us-west-2-57a50c8e2b
+      source_bucket: bedrock-agentcore-codebuild-sources-165361166149-us-west-2
+    authorizer_configuration:
+      customJWTAuthorizer:
+        discoveryUrl: https://cognito-idp.us-west-2.amazonaws.com/us-west-2_bA0e3osFu/.well-known/openid-configuration
+        allowedClients:
+        - 7ljspeqi6oeq43nrvkekh86lfc
+    oauth_configuration: null

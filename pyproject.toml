@@ -6,12 +6,12 @@ readme = "README.md"
 requires-python = "==3.12.8"
 # Keep only truly core dependencies here that every part of your project needs
 dependencies = [
-    "boto3>=1.37.13",
+    "boto3>=1.40.6",
     "pydantic>=2.10.6",
     "fastapi>=0.115.11",
     "jupyter>=1.1.1",
     "langgraph>=0.3.11",
-    "mcp>=1.5.0",
+    "mcp[cli]>=1.5.0",
     "pytest>=8.3.5",
     "uvicorn>=0.34.0",
     "chromadb>=0.6.3",
