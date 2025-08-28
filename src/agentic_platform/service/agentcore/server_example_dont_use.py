@@ -43,7 +43,7 @@ app = FastAPI()
 #     print(f'Got operation {operation}')
 #     result = None
 #     if operation == acrOperation.CREATE:
-#         result: createAcrResp = create_agentcore_runtime(createAcrReq(**request.input))
+#         result: createAcrResp = create_agent_runtime(createAcrReq(**request.input))
 
 #     elif operation == acrOperation.DELETE:
 #         print(f"Calling delete_agentcore_runtime with request input {request.input}")
@@ -82,10 +82,10 @@ app = FastAPI()
 #     )
 
 @app.post("/create-agentcore-runtime")
-def create_agentcore_runtime(request: createAcrReq) -> createAcrResp:
+def create_agent_runtime(request: createAcrReq) -> createAcrResp:
     # print(f"Got request {request}")
     """Create a new AgentCore Runtime from S3 zip package."""
-    return AgentCoreRuntimeController.create_agentcore_runtime(request)
+    return AgentCoreRuntimeController.create_agent_runtime(request)
 
 @app.delete("/delete-agentcore-runtime")
 def delete_agentcore_runtime(request: deleteAcrReq) -> deleteAcrResp:

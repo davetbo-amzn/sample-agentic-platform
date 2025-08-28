@@ -5,7 +5,7 @@ classDiagram
     %% File: server.py
     class FastAPIServer {
         +app: FastAPI
-        +create_agentcore_runtime(request: CreateAgentRuntimeRequest) CreateAgentRuntimeResponse
+        +create_agent_runtime(request: CreateAgentRuntimeRequest) CreateAgentRuntimeResponse
         +delete_agentcore_runtime(request: DeleteAgentRuntimeRequest) DeleteAgentRuntimeResponse
         +get_agentcore_runtime(agent_runtime_id: str) GetAgentRuntimeResponse
         +list_agentcore_runtimes(maxResults: int, nextToken: str) ListAgentRuntimesResponse
@@ -15,7 +15,7 @@ classDiagram
 
     %% File: api/agentcore_runtime_controller.py
     class AgentCoreRuntimeController {
-        +create_agentcore_runtime(request: CreateAgentRuntimeRequest)$ CreateAgentRuntimeResponse
+        +create_agent_runtime(request: CreateAgentRuntimeRequest)$ CreateAgentRuntimeResponse
         +delete_agentcore_runtime(request: DeleteAgentRuntimeRequest)$ DeleteAgentRuntimeResponse
         +get_agentcore_runtime(request: GetAgentRuntimeRequest)$ GetAgentRuntimeResponse
         +list_agentcore_runtimes(request: ListAgentRuntimesRequest)$ ListAgentRuntimesResponse
@@ -26,7 +26,7 @@ classDiagram
     class AgentCoreRuntimeClient {
         -agentcore_control_client: boto3.client
         -agentcore_data_client: boto3.client
-        +create_agentcore_runtime(request: CreateAgentRuntimeRequest)$ CreateAgentRuntimeResponse
+        +create_agent_runtime(request: CreateAgentRuntimeRequest)$ CreateAgentRuntimeResponse
         +delete_agentcore_runtime(request: DeleteAgentRuntimeRequest)$ DeleteAgentRuntimeResponse
         +get_agentcore_runtime(request: GetAgentRuntimeRequest)$ GetAgentRuntimeResponse
         +invoke_agentcore_runtime(request: InvokeAgentCoreRuntimeRequest)$ InvokeAgentCoreRuntimeResponse

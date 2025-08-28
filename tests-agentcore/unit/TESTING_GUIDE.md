@@ -99,7 +99,7 @@ pytest test_agentcore_runtime_client.py -v
 - Proper cleanup of memory resources
 
 ### 3. Runtime Integration Tests
-- `test_create_agentcore_runtime()` - Creates/verifies runtime
+- `test_create_agent_runtime()` - Creates/verifies runtime
 - `test_get_agentcore_runtime()` - Retrieves runtime details  
 - `test_list_agentcore_runtimes()` - Lists available runtimes
 - `test_update_agentcore_runtime()` - Updates runtime configuration

@@ -32,7 +32,7 @@ pytest tests-agentcore/test_agentcore_runtime_client.py -v
 pytest tests-agentcore/ -v
 
 # Run specific test
-pytest tests-agentcore/test_agentcore_runtime_client.py::test_create_agentcore_runtime -v
+pytest tests-agentcore/test_agentcore_runtime_client.py::test_create_agent_runtime -v
 ```
 
 ## Prerequisites

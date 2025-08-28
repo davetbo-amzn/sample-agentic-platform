@@ -34,7 +34,7 @@ class AgentCoreRuntimeController:
     def handler(event, context):
         evt = AgentRuntimeRequest(**event)
         if evt.operation == AgentRuntimeOperation.CREATE:
-            result = AgentCoreRuntimeController.create_agentcore_runtime(
+            result = AgentCoreRuntimeController.create_agent_runtime(
                 CreateAgentRuntimeRequest(**evt.input)
             )
         
@@ -70,8 +70,8 @@ class AgentCoreRuntimeController:
         ).to_dict()
     
     @staticmethod
-    def create_agentcore_runtime(request: CreateAgentRuntimeRequest) -> CreateAgentRuntimeResponse:
-        return AgentCoreRuntimeClient.create_agentcore_runtime(request)
+    def create_agent_runtime(request: CreateAgentRuntimeRequest) -> CreateAgentRuntimeResponse:
+        return AgentCoreRuntimeClient.create_agent_runtime(request)
     
     @staticmethod
     def delete_agentcore_runtime(request: DeleteAgentRuntimeRequest) -> DeleteAgentRuntimeResponse:

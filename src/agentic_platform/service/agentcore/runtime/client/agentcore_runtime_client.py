@@ -38,7 +38,7 @@ from agentic_platform.service.agentcore.types import (
     ListAgentRuntimesRequest,
     ListAgentRuntimesResponse,
     UpdateAgentRuntimeRequest,
-    UpdateAgentRuntimeResponse
+    UpdateAgentRuntimeResponse,
 )
 
 # Configure logging
@@ -68,6 +68,62 @@ parent_dir = os.path.dirname(os.path.abspath(__file__))
 
 
 class AgentCoreRuntimeClient:
+    @staticmethod
+    def _run_subprocess_with_optional_streaming(args, stream_output=False):
+        """
+        Run subprocess with optional real-time streaming to stdout.
+        
+        Args:
+            args: Command arguments list
+            stream_output: Whether to stream output to stdout in real-time
+            
+        Returns:
+            subprocess.CompletedProcess-like object with returncode, stdout, stderr
+        """
+        if stream_output:
+            # Stream output in real-time while capturing for parsing
+            import sys
+            
+            logger.info(f"Running command with streaming: {' '.join(args)}")
+            
+            process = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout for unified streaming
+                text=True,
+                bufsize=1,  # Line buffered
+                universal_newlines=True
+            )
+            
+            stdout_lines = []
+            
+            # Stream output line by line
+            for line in process.stdout:
+                # Print to stdout for real-time visibility
+                print(line.rstrip())
+                sys.stdout.flush()
+                
+                # Also capture for later parsing
+                stdout_lines.append(line)
+            
+            # Wait for process to complete
+            return_code = process.wait()
+            
+            # Reconstruct stdout and stderr for compatibility
+            stdout_content = ''.join(stdout_lines)
+            
+            # Create a result object similar to subprocess.run return
+            class StreamedResult:
+                def __init__(self, returncode, stdout, stderr=""):
+                    self.returncode = returncode
+                    self.stdout = stdout
+                    self.stderr = stderr  # Empty since we merged stderr into stdout
+            
+            return StreamedResult(return_code, stdout_content, "")
+            
+        else:
+            # Use normal subprocess.run for non-streaming mode
+            return subprocess.run(args, capture_output=True, text=True)
     # COMMENTED OUT - Not using create_agentcore_runtime_by_boto method
     # We use JWT authentication with requests.post instead
     # @staticmethod
@@ -81,8 +137,9 @@ class AgentCoreRuntimeClient:
     #     pass
 
     @staticmethod 
-    def create_agentcore_runtime(
-        request: CreateAgentRuntimeRequest
+    def create_agent_runtime(
+        request: CreateAgentRuntimeRequest,
+        stream_output: bool = False
     ) -> Any:
         """Create an Amazon Secure Agent Runtime using intelligent template selection.
         
@@ -167,7 +224,7 @@ class AgentCoreRuntimeClient:
                     ]
 
                     logger.info(f"Running agentcore configure command: {' '.join(args)}")
-                    result = subprocess.run(args, capture_output=True, text=True)
+                    result = AgentCoreRuntimeClient._run_subprocess_with_optional_streaming(args, stream_output)
                     logger.info(f'Agentcore configure completed with return code {result.returncode}')
                     
                     if result.returncode != 0:
@@ -214,7 +271,7 @@ class AgentCoreRuntimeClient:
                         launch_args.append('--auto-update-on-conflict')
                         
                     logger.info(f"Running agentcore launch command: {' '.join(launch_args)}")
-                    result = subprocess.run(launch_args, capture_output=True, text=True)
+                    result = AgentCoreRuntimeClient._run_subprocess_with_optional_streaming(launch_args, stream_output)
                     logger.info(f'Agentcore launch completed with return code {result.returncode}')
                     
                     if result.returncode != 0:
@@ -553,12 +610,12 @@ class AgentCoreRuntimeClient:
                     "agent_runtime_id": runtime['agentRuntimeId'],
                     "agent_runtime_version": runtime['agentRuntimeVersion'],
                     "agent_runtime_name": runtime['agentRuntimeName'],
-                    "status": runtime['status'],
+                    "status": runtime['status'] if isinstance(runtime['status'], str) else runtime['status'].value,
                 }
                 if hasattr(runtime,'lastUpdatedAt') and runtime.lastUpdatedAt:
                     args['last_updated_at'] = runtime.lastUpdatedAt.isoformat()
                 
-                runtimes.append(AgentRuntime(**args).to_dict())
+                runtimes.append(AgentRuntime(**args))
             logger.info(f"Successfully listed {len(runtimes)} AgentCore Runtimes")
             
             args = {

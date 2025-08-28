@@ -192,7 +192,7 @@ requests==2.31.0
             agentRoleArnrn=TEST_ROLE_ARN
         )
         
-        created_runtime_id = AgentCoreRuntimeClient.create_agentcore_runtime(create_request)
+        created_runtime_id = AgentCoreRuntimeClient.create_agent_runtime(create_request)
         logging.info(f"Created test runtime with ID: {created_runtime_id}")
         
         # Wait for runtime to be ready

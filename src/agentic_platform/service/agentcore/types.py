@@ -11,6 +11,7 @@ class AgentRuntimeOperation(Enum):
     GET='get-agent-runtime'
     INVOKE='invoke-agent-runtime'
     LIST='list-agent-runtimes'
+    UPDATE='update-agent-runtime'
 
 class AgentRuntimeRequest(BaseModel):
     operation: AgentRuntimeOperation
@@ -108,6 +109,8 @@ class AgentRuntimeStatus(Enum):
     UPDATE_FAILED='UPDATE_FAILED'
     READY='READY'
     DELETING='DELETING'
+    def __str__(item):
+        return item.value
 
 class AgentRuntime(BaseModel):
     agent_runtime_arn: str
@@ -127,7 +130,7 @@ class AgentRuntime(BaseModel):
             "agent_runtime_id": self.agent_runtime_id,
             "agent_runtime_version": self.agent_runtime_version,
             "agent_runtime_name": self.agent_runtime_name,
-            "status": self.status,
+            "status": self.status.value,
             "created_at": None if not self.created_at else self.created_at.isoformat(),
             "last_updated_at": None if not self.last_updated_at else self.last_updated_at.isoformat(),
             "workload_identity_details": self.workload_identity_details
@@ -332,4 +335,169 @@ class UpdateAgentRuntimeResponse(BaseModel):
             'created_at': self.created_at,
             'last_updated_at': self.last_updated_at,
             'status': self.status
+        }
+
+# OAuth2 Credential Provider Types
+class OAuth2CredentialProviderOperation(Enum):
+    CREATE='create-oauth2-credential-provider'
+    DELETE='delete-oauth2-credential-provider'
+    GET='get-oauth2-credential-provider'
+    LIST='list-oauth2-credential-providers'
+    UPDATE='update-oauth2-credential-provider'
+
+class OAuth2CredentialProviderRequest(BaseModel):
+    operation: OAuth2CredentialProviderOperation
+    input: Dict[str, Any]
+
+class OAuth2CredentialProviderResponse(BaseModel):
+    status_code: int
+    result: Any
+    
+    def to_dict(self):
+        return {
+            'status_code': self.status_code,
+            'result': self.result
+        }
+
+class OAuth2CredentialProviderStatus(Enum):
+    CREATING='CREATING'
+    CREATE_FAILED='CREATE_FAILED'
+    UPDATING='UPDATING'
+    UPDATE_FAILED='UPDATE_FAILED'
+    READY='READY'
+    DELETING='DELETING'
+    
+    def __str__(self):
+        return self.value
+
+class GoogleOAuth2Config(BaseModel):
+    client_id: str
+    client_secret: str
+
+class CreateOauth2CredentialProviderRequest(BaseModel):
+    name: str
+    provider_type: Literal['google'] = 'google'
+    scopes: List[str]
+    google_config: Optional[GoogleOAuth2Config] = None
+    client_token: Optional[str] = Field(default_factory=lambda: uuid4().hex)
+
+class OAuth2CredentialProvider(BaseModel):
+    arn: str
+    credential_provider_id: str
+    name: str
+    provider_type: str
+    status: OAuth2CredentialProviderStatus
+    scopes: List[str]
+    created_at: Optional[str] = None
+    last_updated_at: Optional[str] = None
+    
+    def to_dict(self):
+        return {
+            'arn': self.arn,
+            'credential_provider_id': self.credential_provider_id,
+            'name': self.name,
+            'provider_type': self.provider_type,
+            'status': self.status.value if isinstance(self.status, OAuth2CredentialProviderStatus) else self.status,
+            'scopes': self.scopes,
+            'created_at': self.created_at,
+            'last_updated_at': self.last_updated_at
+        }
+
+class CreateOauth2CredentialProviderResponse(BaseModel):
+    arn: str
+    credential_provider_id: str
+    name: str
+    provider_type: str
+    status: OAuth2CredentialProviderStatus
+    scopes: List[str]
+    created_at: str
+    
+    def to_dict(self):
+        return {
+            'arn': self.arn,
+            'credential_provider_id': self.credential_provider_id,
+            'name': self.name,
+            'provider_type': self.provider_type,
+            'status': self.status.value if isinstance(self.status, OAuth2CredentialProviderStatus) else self.status,
+            'scopes': self.scopes,
+            'created_at': self.created_at
+        }
+
+class DeleteOauth2CredentialProviderRequest(BaseModel):
+    credential_provider_id: str
+
+class DeleteOauth2CredentialProviderResponse(BaseModel):
+    status: OAuth2CredentialProviderStatus
+    
+    def to_dict(self):
+        return {
+            'status': self.status.value if isinstance(self.status, OAuth2CredentialProviderStatus) else self.status
+        }
+
+class GetOauth2CredentialProviderRequest(BaseModel):
+    credential_provider_id: str
+
+class GetOauth2CredentialProviderResponse(BaseModel):
+    arn: str
+    credential_provider_id: str
+    name: str
+    provider_type: str
+    status: OAuth2CredentialProviderStatus
+    scopes: List[str]
+    created_at: str
+    last_updated_at: str
+    
+    def to_dict(self):
+        return {
+            'arn': self.arn,
+            'credential_provider_id': self.credential_provider_id,
+            'name': self.name,
+            'provider_type': self.provider_type,
+            'status': self.status.value if isinstance(self.status, OAuth2CredentialProviderStatus) else self.status,
+            'scopes': self.scopes,
+            'created_at': self.created_at,
+            'last_updated_at': self.last_updated_at
+        }
+
+class ListOauth2CredentialProvidersRequest(BaseModel):
+    max_results: Optional[int] = 20
+    next_token: Optional[str] = None
+
+class ListOauth2CredentialProvidersResponse(BaseModel):
+    oauth2_credential_providers: List[OAuth2CredentialProvider]
+    next_token: Optional[str] = None
+    
+    def to_dict(self):
+        return {
+            'oauth2_credential_providers': [provider.to_dict() for provider in self.oauth2_credential_providers],
+            'next_token': self.next_token
+        }
+
+class UpdateOauth2CredentialProviderRequest(BaseModel):
+    credential_provider_id: str
+    name: Optional[str] = None
+    scopes: Optional[List[str]] = None
+    google_config: Optional[GoogleOAuth2Config] = None
+    client_token: Optional[str] = Field(default_factory=lambda: uuid4().hex)
+
+class UpdateOauth2CredentialProviderResponse(BaseModel):
+    arn: str
+    credential_provider_id: str
+    name: str
+    provider_type: str
+    status: OAuth2CredentialProviderStatus
+    scopes: List[str]
+    created_at: str
+    last_updated_at: str
+    
+    def to_dict(self):
+        return {
+            'arn': self.arn,
+            'credential_provider_id': self.credential_provider_id,
+            'name': self.name,
+            'provider_type': self.provider_type,
+            'status': self.status.value if isinstance(self.status, OAuth2CredentialProviderStatus) else self.status,
+            'scopes': self.scopes,
+            'created_at': self.created_at,
+            'last_updated_at': self.last_updated_at
         }

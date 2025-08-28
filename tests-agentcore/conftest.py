@@ -532,16 +532,16 @@ def session_runtime(agentcore_control_client, deployed_resources):
             test_runtime_name = f"{TEST_RUNTIME_NAME_PREFIX}_{unique_suffix}"
             print(f"Creating test_runtime_name {test_runtime_name}")
             
-            # Use the new create_agentcore_runtime method that uses local templates and agentcore CLI
+            # Use the new create_agent_runtime method that uses local templates and agentcore CLI
             create_request = CreateAgentRuntimeRequest(
                 agent_description="A test agent for unit and system testing using the single agent deployment template",
                 name=test_runtime_name,
                 entrypoint="entrypoint.py",
-                protocol="mcp"
+                protocol="HTTP"
             )
 
-            print(f"Sending request to create_agentcore_runtime {create_request}")
-            runtime = AgentCoreRuntimeClient.create_agentcore_runtime(create_request)
+            print(f"Sending request to create_agent_runtime {create_request}")
+            runtime = AgentCoreRuntimeClient.create_agent_runtime(create_request, stream_output=True)
             print(f"Got agentcore runtime result {runtime}")
             agent_runtime_id = runtime.agent_runtime_id
             print(f"Created new test runtime with ID: {agent_runtime_id}")

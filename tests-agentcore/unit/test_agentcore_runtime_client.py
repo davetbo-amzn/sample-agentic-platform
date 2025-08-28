@@ -134,16 +134,16 @@ def shared_test_runtime(real_agentcore_control_client, env_setup):
                 test_runtime_name = f"{TEST_RUNTIME_NAME_PREFIX}_{unique_suffix}"
                 print(f"Creating test_runtime_name {test_runtime_name}")
                 
-                # Use the new create_agentcore_runtime method that uses local templates and agentcore CLI
+                # Use the new create_agent_runtime method that uses local templates and agentcore CLI
                 create_request = CreateAgentRuntimeRequest(
                     agent_description="A test agent for unit testing using the single agent deployment template",
                     name=test_runtime_name,
                     entrypoint="entrypoint.py",
-                    protocol="mcp"
+                    protocol="HTTP"
                 )
 
-                print(f"Sending request to create_agentcore_runtime {create_request}")
-                runtime = AgentCoreRuntimeClient.create_agentcore_runtime(create_request)
+                print(f"Sending request to create_agent_runtime {create_request}")
+                runtime = AgentCoreRuntimeClient.create_agent_runtime(create_request)
                 print(f"Got agentcore runtime result {runtime}")
                 agent_runtime_id = runtime.agent_runtime_id
                 print(f"Created new test runtime with ID: {agent_runtime_id}")
@@ -236,12 +236,12 @@ def _wait_for_runtime_active(client, agent_runtime_id, max_wait_time=300):
     raise Exception(f"Runtime {agent_runtime_id} did not become active within {max_wait_time} seconds")
 
 
-def test_create_agentcore_runtime(shared_test_runtime, real_agentcore_control_client, env_setup):
+def test_create_agent_runtime(shared_test_runtime, real_agentcore_control_client, env_setup):
     """Test creating a runtime - uses shared runtime to verify it exists."""
     # Act - The shared runtime fixture already creates/verifies the runtime
     assert shared_test_runtime is not None
-    print(f"test_create_agentcore_runtime received runtime {shared_test_runtime}")
-    agent_runtime_id = shared_test_runtime['agent_runtime_id']
+    print(f"test_create_agent_runtime received runtime {shared_test_runtime}")
+    agent_runtime_id = shared_test_runtime.agent_runtime_id
     
     # Assert
     assert agent_runtime_id is not None
@@ -268,7 +268,7 @@ def test_create_agentcore_runtime(shared_test_runtime, real_agentcore_control_cl
 
 def test_get_agentcore_runtime(shared_test_runtime, real_agentcore_control_client, env_setup):
     """Test getting runtime details with real AWS API calls."""
-    agent_runtime_id = shared_test_runtime['agent_runtime_id']
+    agent_runtime_id = shared_test_runtime.agent_runtime_id
     
     # Test getting runtime details
     get_request = GetAgentRuntimeRequest(agent_runtime_id=agent_runtime_id)
@@ -287,7 +287,7 @@ def test_get_agentcore_runtime(shared_test_runtime, real_agentcore_control_clien
 
 def test_list_agentcore_runtimes(shared_test_runtime, real_agentcore_control_client, env_setup):
     """Test listing runtimes with real AWS API calls."""
-    agent_runtime_id = shared_test_runtime['agent_runtime_id']
+    agent_runtime_id = shared_test_runtime.agent_runtime_id
     print(f"Testing with shared_test_runtime {shared_test_runtime}")
     print(f"test agent_runtime_id {agent_runtime_id}")
 
