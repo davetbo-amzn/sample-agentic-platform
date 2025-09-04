@@ -67,20 +67,45 @@ output "environment" {
 }
 
 ########################################################
-# S3 Outputs
+# Cognito Outputs
 ########################################################
 
-output "agentcore_runtime_zip_files_bucket_id" {
-  description = "ID of the S3 bucket for agentcore runtime zip files"
-  value       = aws_s3_bucket.agentcore_runtime_zip_files.id
+output "cognito_enabled" {
+  description = "Whether Cognito stack is enabled"
+  value       = var.enable_cognito
 }
 
-output "agentcore_runtime_zip_files_bucket_arn" {
-  description = "ARN of the S3 bucket for agentcore runtime zip files"
-  value       = aws_s3_bucket.agentcore_runtime_zip_files.arn
+output "cognito_user_pool_id" {
+  description = "Cognito User Pool ID"
+  value       = var.enable_cognito ? aws_cognito_user_pool.agentcore_user_pool[0].id : var.cognito_user_pool_id
 }
 
-output "agentcore_runtime_zip_files_bucket_domain_name" {
-  description = "Domain name of the S3 bucket for agentcore runtime zip files"
-  value       = aws_s3_bucket.agentcore_runtime_zip_files.bucket_domain_name
+output "cognito_user_pool_arn" {
+  description = "Cognito User Pool ARN"
+  value       = var.enable_cognito ? aws_cognito_user_pool.agentcore_user_pool[0].arn : null
+}
+
+output "cognito_user_pool_client_id" {
+  description = "Cognito User Pool Client ID"
+  value       = var.enable_cognito ? aws_cognito_user_pool_client.agentcore_user_pool_client[0].id : var.cognito_user_pool_client_id
+}
+
+output "cognito_identity_pool_id" {
+  description = "Cognito Identity Pool ID"
+  value       = var.enable_cognito ? aws_cognito_identity_pool.agentcore_identity_pool[0].id : null
+}
+
+output "cognito_invoke_client_id" {
+  description = "Cognito Invoke Client ID for AgentCore"
+  value       = var.enable_cognito ? aws_cognito_user_pool_client.agentcore_invoke_client[0].id : null
+}
+
+output "cognito_user_pool_domain" {
+  description = "Cognito User Pool Domain"
+  value       = var.enable_cognito ? aws_cognito_user_pool_domain.agentcore_user_pool_domain[0].domain : null
+}
+
+output "cognito_authenticated_role_arn" {
+  description = "Cognito Authenticated Role ARN"
+  value       = var.enable_cognito ? aws_iam_role.cognito_authenticated_role[0].arn : null
 }

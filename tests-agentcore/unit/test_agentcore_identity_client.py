@@ -4,15 +4,15 @@ Unit tests for the AgentCoreIdentityClient and AgentCoreIdentityController class
 These tests verify the functionality of the AgentCore Identity components
 that manage OAuth2 credential providers and other identity resources.
 
-The tests include both unit tests with mocking and integration tests that
-make real API calls to AWS Bedrock AgentCore services.
+All tests make real API calls to AWS Bedrock AgentCore services without mocking,
+following TDD principles and testing against actual services.
 """
 
 import os
 import pytest
 import boto3
 import time
-from unittest.mock import Mock, patch, MagicMock
+import json
 from datetime import datetime, timezone
 from botocore.exceptions import ClientError, NoCredentialsError
 from pathlib import Path
@@ -27,9 +27,9 @@ from agentic_platform.service.agentcore.types import (
     # OAuth2 Credential Provider types
     OAuth2CredentialProvider,
     OAuth2CredentialProviderStatus,
-    OAuth2CredentialProviderOperation,
-    OAuth2CredentialProviderRequest,
-    OAuth2CredentialProviderResponse,
+    # OAuth2CredentialProviderOperation,
+    # OAuth2CredentialProviderRequest,
+    # OAuth2CredentialProviderResponse,
     CreateOauth2CredentialProviderRequest,
     CreateOauth2CredentialProviderResponse,
     DeleteOauth2CredentialProviderRequest,
@@ -66,168 +66,7 @@ DELETE_AT_END = os.getenv('DELETE_AT_END', 'True').lower() not in ['false', '0',
 
 
 class TestAgentCoreIdentityController:
-    """Unit tests for AgentCoreIdentityController class."""
-
-    def test_handler_create_operation(self):
-        """Test handler with CREATE operation."""
-        # Arrange
-        event = {
-            'operation': 'create-oauth2-credential-provider',
-            'input': {
-                'name': 'test-provider',
-                'provider_type': 'google',
-                'scopes': ['openid', 'email'],
-                'google_config': {
-                    'client_id': 'test-client-id',
-                    'client_secret': 'test-client-secret'
-                }
-            }
-        }
-        context = {}
-        
-        mock_response = CreateOauth2CredentialProviderResponse(
-            arn='arn:aws:bedrock:us-west-2:123456789012:credential-provider/test-id',
-            credential_provider_id='test-id',
-            name='test-provider',
-            provider_type='GOOGLE',
-            status=OAuth2CredentialProviderStatus.CREATING,
-            scopes=['openid', 'email'],
-            created_at='2023-01-01T00:00:00Z'
-        )
-        
-        with patch.object(AgentCoreIdentityController, 'create_oauth2_credential_provider', return_value=mock_response) as mock_create:
-            # Act
-            result = AgentCoreIdentityController.handler(event, context)
-            
-            # Assert
-            assert result['status_code'] == 200
-            assert 'result' in result
-            mock_create.assert_called_once()
-
-    def test_handler_delete_operation(self):
-        """Test handler with DELETE operation."""
-        # Arrange
-        event = {
-            'operation': 'delete-oauth2-credential-provider',
-            'input': {
-                'credential_provider_id': 'test-id'
-            }
-        }
-        context = {}
-        
-        mock_response = DeleteOauth2CredentialProviderResponse(
-            status=OAuth2CredentialProviderStatus.DELETING
-        )
-        
-        with patch.object(AgentCoreIdentityController, 'delete_oauth2_credential_provider', return_value=mock_response) as mock_delete:
-            # Act
-            result = AgentCoreIdentityController.handler(event, context)
-            
-            # Assert
-            assert result['status_code'] == 200
-            assert 'result' in result
-            mock_delete.assert_called_once()
-
-    def test_handler_get_operation(self):
-        """Test handler with GET operation."""
-        # Arrange
-        event = {
-            'operation': 'get-oauth2-credential-provider',
-            'input': {
-                'credential_provider_id': 'test-id'
-            }
-        }
-        context = {}
-        
-        mock_response = GetOauth2CredentialProviderResponse(
-            arn='arn:aws:bedrock:us-west-2:123456789012:credential-provider/test-id',
-            credential_provider_id='test-id',
-            name='test-provider',
-            provider_type='GOOGLE',
-            status=OAuth2CredentialProviderStatus.READY,
-            scopes=['openid', 'email'],
-            created_at='2023-01-01T00:00:00Z',
-            last_updated_at='2023-01-01T00:00:00Z'
-        )
-        
-        with patch.object(AgentCoreIdentityController, 'get_oauth2_credential_provider', return_value=mock_response) as mock_get:
-            # Act
-            result = AgentCoreIdentityController.handler(event, context)
-            
-            # Assert
-            assert result['status_code'] == 200
-            assert 'result' in result
-            mock_get.assert_called_once()
-
-    def test_handler_list_operation(self):
-        """Test handler with LIST operation."""
-        # Arrange
-        event = {
-            'operation': 'list-oauth2-credential-providers',
-            'input': {
-                'max_results': 10
-            }
-        }
-        context = {}
-        
-        mock_provider = OAuth2CredentialProvider(
-            arn='arn:aws:bedrock:us-west-2:123456789012:credential-provider/test-id',
-            credential_provider_id='test-id',
-            name='test-provider',
-            provider_type='GOOGLE',
-            status=OAuth2CredentialProviderStatus.READY,
-            scopes=['openid', 'email'],
-            created_at='2023-01-01T00:00:00Z',
-            last_updated_at='2023-01-01T00:00:00Z'
-        )
-        
-        mock_response = ListOauth2CredentialProvidersResponse(
-            oauth2_credential_providers=[mock_provider],
-            next_token=None
-        )
-        
-        with patch.object(AgentCoreIdentityController, 'list_oauth2_credential_providers', return_value=mock_response) as mock_list:
-            # Act
-            result = AgentCoreIdentityController.handler(event, context)
-            
-            # Assert
-            assert result['status_code'] == 200
-            assert 'result' in result
-            mock_list.assert_called_once()
-
-    def test_handler_update_operation(self):
-        """Test handler with UPDATE operation."""
-        # Arrange
-        event = {
-            'operation': 'update-oauth2-credential-provider',
-            'input': {
-                'credential_provider_id': 'test-id',
-                'name': 'test-provider',
-                'provider_type': 'google',
-                'scopes': ['openid', 'email']
-            }
-        }
-        context = {}
-        
-        mock_response = UpdateOauth2CredentialProviderResponse(
-            arn='arn:aws:bedrock:us-west-2:123456789012:credential-provider/test-id',
-            credential_provider_id='test-id',
-            name='updated-provider',
-            provider_type='GOOGLE',
-            status=OAuth2CredentialProviderStatus.UPDATING,
-            scopes=['openid', 'email', 'profile'],
-            created_at='2023-01-01T00:00:00Z',
-            last_updated_at='2023-01-01T01:00:00Z'
-        )
-        
-        with patch.object(AgentCoreIdentityController, 'update_oauth2_credential_provider', return_value=mock_response) as mock_update:
-            # Act
-            result = AgentCoreIdentityController.handler(event, context)
-            
-            # Assert
-            assert result['status_code'] == 200
-            assert 'result' in result
-            mock_update.assert_called_once()
+    """Real API tests for AgentCoreIdentityController class - no mocking."""
 
     def test_handler_invalid_operation(self):
         """Test handler with invalid operation."""
@@ -238,236 +77,190 @@ class TestAgentCoreIdentityController:
         }
         context = {}
         
+        print("Testing handler with invalid operation...")
+        print(f"Input event: {json.dumps(event, indent=2)}")
+        
         # Act & Assert
         with pytest.raises(Exception) as exc_info:
-            AgentCoreIdentityController.handler(event, context)
+            result = AgentCoreIdentityController.handler(event, context)
         
         # The actual validation error will mention the valid enum values
         error_msg = str(exc_info.value)
+        print(f"Expected validation error received: {error_msg}")
         assert "validation error" in error_msg.lower()
 
 
-class TestAgentCoreIdentityClientUnit:
-    """Unit tests for AgentCoreIdentityClient class with mocking."""
+class TestAgentCoreIdentityClientRealAPI:
+    """Real API tests for AgentCoreIdentityClient class - no mocking."""
 
-    @patch('agentic_platform.service.agentcore.identity.client.agentcore_identity_client.agentcore_control_client')
-    def test_create_oauth2_credential_provider_success(self, mock_client):
-        """Test successful creation of OAuth2 credential provider."""
-        # Arrange
-        mock_response = {
-            'arn': 'arn:aws:bedrock:us-west-2:123456789012:credential-provider/test-id',
-            'credentialProviderId': 'test-id',
-            'name': 'test-provider',
-            'providerType': 'GOOGLE',
-            'status': 'CREATING',
-            'scopes': ['openid', 'email'],
-            'createdAt': datetime(2023, 1, 1, tzinfo=timezone.utc),
-            'ResponseMetadata': {'HTTPStatusCode': 200}
-        }
-        mock_client.create_oauth2_credential_provider.return_value = mock_response
+    def test_list_oauth2_credential_providers_real(self, real_agentcore_control_client, env_setup):
+        """Test real listing of OAuth2 credential providers."""
+        if not real_agentcore_control_client:
+            pytest.fail("Real AWS client not available - ensure AWS credentials are configured")
         
-        request = CreateOauth2CredentialProviderRequest(
-            name='test-provider',
-            provider_type='google',
-            scopes=['openid', 'email'],
-            google_config=GoogleOAuth2Config(
-                client_id='test-client-id',
-                client_secret='test-client-secret'
-            )
-        )
+        print("=== Testing real list_oauth2_credential_providers ===")
+        
+        # Arrange
+        request = ListOauth2CredentialProvidersRequest(max_results=20)
+        print(f"Request parameters: max_results={request.max_results}")
         
         # Act
-        result = AgentCoreIdentityClient.create_oauth2_credential_provider(request)
-        
-        # Assert
-        assert result.credential_provider_id == 'test-id'
-        assert result.name == 'test-provider'
-        assert result.provider_type == 'GOOGLE'
-        assert result.status == OAuth2CredentialProviderStatus.CREATING
-        assert result.scopes == ['openid', 'email']
-        
-        mock_client.create_oauth2_credential_provider.assert_called_once()
-
-    @patch('agentic_platform.service.agentcore.identity.client.agentcore_identity_client.agentcore_control_client')
-    def test_create_oauth2_credential_provider_failure(self, mock_client):
-        """Test failure in OAuth2 credential provider creation."""
-        # Arrange
-        mock_client.create_oauth2_credential_provider.side_effect = Exception("AWS API Error")
-        
-        request = CreateOauth2CredentialProviderRequest(
-            name='test-provider',
-            provider_type='google',
-            scopes=['openid', 'email'],
-            google_config=GoogleOAuth2Config(
-                client_id='test-client-id',
-                client_secret='test-client-secret'
-            )
-        )
-        
-        # Act & Assert
-        with pytest.raises(Exception) as exc_info:
-            AgentCoreIdentityClient.create_oauth2_credential_provider(request)
-        
-        assert "AWS API Error" in str(exc_info.value)
-
-    @patch('agentic_platform.service.agentcore.identity.client.agentcore_identity_client.agentcore_control_client')
-    def test_delete_oauth2_credential_provider_success(self, mock_client):
-        """Test successful deletion of OAuth2 credential provider."""
-        # Arrange
-        mock_response = {'ResponseMetadata': {'HTTPStatusCode': 200}}
-        mock_client.delete_oauth2_credential_provider.return_value = mock_response
-        
-        request = DeleteOauth2CredentialProviderRequest(
-            credential_provider_id='test-id'
-        )
-        
-        # Act
-        result = AgentCoreIdentityClient.delete_oauth2_credential_provider(request)
-        
-        # Assert
-        assert result.status == OAuth2CredentialProviderStatus.DELETING
-        mock_client.delete_oauth2_credential_provider.assert_called_once_with(
-            credentialProviderId='test-id'
-        )
-
-    @patch('agentic_platform.service.agentcore.identity.client.agentcore_identity_client.agentcore_control_client')
-    def test_get_oauth2_credential_provider_success(self, mock_client):
-        """Test successful retrieval of OAuth2 credential provider."""
-        # Arrange
-        mock_response = {
-            'arn': 'arn:aws:bedrock:us-west-2:123456789012:credential-provider/test-id',
-            'credentialProviderId': 'test-id',
-            'name': 'test-provider',
-            'providerType': 'GOOGLE',
-            'status': 'READY',
-            'scopes': ['openid', 'email'],
-            'createdAt': datetime(2023, 1, 1, tzinfo=timezone.utc),
-            'lastUpdatedAt': datetime(2023, 1, 1, tzinfo=timezone.utc),
-            'ResponseMetadata': {'HTTPStatusCode': 200}
-        }
-        mock_client.get_oauth2_credential_provider.return_value = mock_response
-        
-        request = GetOauth2CredentialProviderRequest(
-            credential_provider_id='test-id'
-        )
-        
-        # Act
-        result = AgentCoreIdentityClient.get_oauth2_credential_provider(request)
-        
-        # Assert
-        assert result.credential_provider_id == 'test-id'
-        assert result.name == 'test-provider'
-        assert result.status == OAuth2CredentialProviderStatus.READY
-        mock_client.get_oauth2_credential_provider.assert_called_once_with(
-            credentialProviderId='test-id'
-        )
-
-    @patch('agentic_platform.service.agentcore.identity.client.agentcore_identity_client.agentcore_control_client')
-    def test_get_oauth2_credential_provider_not_found(self, mock_client):
-        """Test retrieval of non-existent OAuth2 credential provider."""
-        # Arrange
-        error_response = {
-            'Error': {
-                'Code': 'ResourceNotFoundException',
-                'Message': 'The requested resource was not found.'
-            }
-        }
-        mock_error = ClientError(error_response, 'GetOauth2CredentialProvider')
-        mock_error.response = error_response
-        mock_client.get_oauth2_credential_provider.side_effect = mock_error
-        
-        request = GetOauth2CredentialProviderRequest(
-            credential_provider_id='non-existent-id'
-        )
-        
-        # Act & Assert
-        with pytest.raises(Exception):
-            AgentCoreIdentityClient.get_oauth2_credential_provider(request)
-
-    @patch('agentic_platform.service.agentcore.identity.client.agentcore_identity_client.agentcore_control_client')
-    def test_list_oauth2_credential_providers_success(self, mock_client):
-        """Test successful listing of OAuth2 credential providers."""
-        # Arrange
-        mock_response = {
-            'oauth2CredentialProviders': [
-                {
-                    'arn': 'arn:aws:bedrock:us-west-2:123456789012:credential-provider/test-id-1',
-                    'credentialProviderId': 'test-id-1',
-                    'name': 'test-provider-1',
-                    'providerType': 'GOOGLE',
-                    'status': 'READY',
-                    'scopes': ['openid', 'email'],
-                    'createdAt': datetime(2023, 1, 1, tzinfo=timezone.utc),
-                    'lastUpdatedAt': datetime(2023, 1, 1, tzinfo=timezone.utc)
-                },
-                {
-                    'arn': 'arn:aws:bedrock:us-west-2:123456789012:credential-provider/test-id-2',
-                    'credentialProviderId': 'test-id-2',
-                    'name': 'test-provider-2',
-                    'providerType': 'GOOGLE',
-                    'status': 'READY',
-                    'scopes': ['openid', 'profile'],
-                    'createdAt': datetime(2023, 1, 2, tzinfo=timezone.utc),
-                    'lastUpdatedAt': datetime(2023, 1, 2, tzinfo=timezone.utc)
-                }
-            ],
-            'nextToken': 'next-token-value',
-            'ResponseMetadata': {'HTTPStatusCode': 200}
-        }
-        mock_client.list_oauth2_credential_providers.return_value = mock_response
-        
-        request = ListOauth2CredentialProvidersRequest(
-            max_results=10,
-            next_token='some-token'
-        )
-        
-        # Act
+        print("Making real API call to list OAuth2 credential providers...")
         result = AgentCoreIdentityClient.list_oauth2_credential_providers(request)
         
-        # Assert
-        assert len(result.oauth2_credential_providers) == 2
-        assert result.next_token == 'next-token-value'
-        assert result.oauth2_credential_providers[0].credential_provider_id == 'test-id-1'
-        assert result.oauth2_credential_providers[1].credential_provider_id == 'test-id-2'
+        # Print full response details
+        print(f"API Response received:")
+        print(f"  - Number of providers found: {len(result.oauth2_credential_providers)}")
+        print(f"  - Next token: {result.next_token}")
         
-        mock_client.list_oauth2_credential_providers.assert_called_once_with(
-            maxResults=10,
-            nextToken='some-token'
-        )
+        for i, provider in enumerate(result.oauth2_credential_providers):
+            print(f"  - Provider {i+1}:")
+            print(f"    * ARN: {provider.arn}")
+            print(f"    * ID: {provider.credential_provider_id}")
+            print(f"    * Name: {provider.name}")
+            print(f"    * Provider Type: {provider.provider_type}")
+            print(f"    * Status: {provider.status}")
+            print(f"    * Scopes: {provider.scopes}")
+            print(f"    * Created At: {provider.created_at}")
+            print(f"    * Last Updated At: {provider.last_updated_at}")
+        
+        # Assert
+        assert result is not None
+        assert result.oauth2_credential_providers is not None
+        assert isinstance(result.oauth2_credential_providers, list)
+        
+        print(f"✓ List OAuth2 providers test completed successfully")
 
-    @patch('agentic_platform.service.agentcore.identity.client.agentcore_identity_client.agentcore_control_client')
-    def test_update_oauth2_credential_provider_success(self, mock_client):
-        """Test successful update of OAuth2 credential provider."""
-        # Arrange
-        mock_response = {
-            'arn': 'arn:aws:bedrock:us-west-2:123456789012:credential-provider/test-id',
-            'credentialProviderId': 'test-id',
-            'name': 'updated-provider',
-            'providerType': 'GOOGLE',
-            'status': 'UPDATING',
-            'scopes': ['openid', 'email', 'profile'],
-            'createdAt': datetime(2023, 1, 1, tzinfo=timezone.utc),
-            'lastUpdatedAt': datetime(2023, 1, 1, 1, tzinfo=timezone.utc),
-            'ResponseMetadata': {'HTTPStatusCode': 200}
-        }
-        mock_client.update_oauth2_credential_provider.return_value = mock_response
+    def test_create_and_delete_oauth2_provider_real(self, real_agentcore_control_client, env_setup):
+        """Test real creation and deletion of OAuth2 credential provider."""
+        if not real_agentcore_control_client:
+            pytest.fail("Real AWS client not available - ensure AWS credentials are configured")
         
-        request = UpdateOauth2CredentialProviderRequest(
-            credential_provider_id='test-id',
-            name='updated-provider',
-            scopes=['openid', 'email', 'profile']
+        print("=== Testing real create and delete OAuth2 credential provider ===")
+        
+        # Arrange
+        unique_suffix = uuid4().hex[-6:]
+        provider_name = f"{TEST_PROVIDER_NAME_PREFIX}_real_test_{unique_suffix}"
+        
+        create_request = CreateOauth2CredentialProviderRequest(
+            name=provider_name,
+            provider_type='google',
+            scopes=['openid', 'email'],
+            google_config=GoogleOAuth2Config(
+                client_id='test-client-id-real',
+                client_secret='test-client-secret-real'
+            )
         )
         
-        # Act
-        result = AgentCoreIdentityClient.update_oauth2_credential_provider(request)
+        print(f"Create request parameters:")
+        print(f"  - name: {create_request.name}")
+        print(f"  - provider_type: {create_request.provider_type}")
+        print(f"  - scopes: {create_request.scopes}")
+        print(f"  - google_config.client_id: {create_request.google_config.client_id}")
+        print(f"  - google_config.client_secret: {create_request.google_config.client_secret}")
         
-        # Assert
-        assert result.credential_provider_id == 'test-id'
-        assert result.name == 'updated-provider'
-        assert result.status == OAuth2CredentialProviderStatus.UPDATING
-        assert result.scopes == ['openid', 'email', 'profile']
+        provider_id = None
+        try:
+            # Act - Create
+            print("Making real API call to create OAuth2 credential provider...")
+            create_response = AgentCoreIdentityClient.create_oauth2_credential_provider(create_request)
+            provider_id = create_response.credential_provider_id
+            
+            # Print full create response details
+            print(f"Create API Response:")
+            print(f"  - ARN: {create_response.arn}")
+            print(f"  - Provider ID: {create_response.credential_provider_id}")
+            print(f"  - Name: {create_response.name}")
+            print(f"  - Provider Type: {create_response.provider_type}")
+            print(f"  - Status: {create_response.status}")
+            print(f"  - Scopes: {create_response.scopes}")
+            print(f"  - Created At: {create_response.created_at}")
+            
+            # Assert create response
+            assert create_response.credential_provider_id is not None
+            assert create_response.name == provider_name
+            assert create_response.provider_type == 'GoogleOauth2'
+            assert create_response.scopes == ['openid', 'email']
+            assert create_response.status in [OAuth2CredentialProviderStatus.CREATING, OAuth2CredentialProviderStatus.READY]
+            
+            print(f"✓ OAuth2 provider created successfully: {provider_id}")
+            
+            # Test Get
+            print("Making real API call to get OAuth2 credential provider...")
+            get_request = GetOauth2CredentialProviderRequest(
+                credential_provider_id=provider_id
+            )
+            get_response = AgentCoreIdentityClient.get_oauth2_credential_provider(get_request)
+            
+            # Print full get response details
+            print(f"Get API Response:")
+            print(f"  - ARN: {get_response.arn}")
+            print(f"  - Provider ID: {get_response.credential_provider_id}")
+            print(f"  - Name: {get_response.name}")
+            print(f"  - Provider Type: {get_response.provider_type}")
+            print(f"  - Status: {get_response.status}")
+            print(f"  - Scopes: {get_response.scopes}")
+            print(f"  - Created At: {get_response.created_at}")
+            print(f"  - Last Updated At: {get_response.last_updated_at}")
+            
+            # Assert get response
+            assert get_response.credential_provider_id == provider_id
+            assert get_response.name == provider_name
+            assert get_response.provider_type == 'GoogleOauth2'
+            assert get_response.scopes is not None
+            assert get_response.created_at is not None
+            
+            print(f"✓ OAuth2 provider retrieved successfully: {provider_id}")
+            
+        finally:
+            # Cleanup - Delete
+            if provider_id and DELETE_AT_END:
+                try:
+                    print("Making real API call to delete OAuth2 credential provider...")
+                    delete_request = DeleteOauth2CredentialProviderRequest(
+                        credential_provider_id=provider_id
+                    )
+                    delete_response = AgentCoreIdentityClient.delete_oauth2_credential_provider(delete_request)
+                    
+                    # Print full delete response details
+                    print(f"Delete API Response:")
+                    print(f"  - Status: {delete_response.status}")
+                    
+                    # Assert delete response
+                    assert delete_response.status == OAuth2CredentialProviderStatus.DELETING
+                    
+                    print(f"✓ OAuth2 provider deleted successfully: {provider_id}")
+                except Exception as e:
+                    print(f"Failed to cleanup provider {provider_id}: {str(e)}")
+
+    def test_get_nonexistent_oauth2_provider_real(self, real_agentcore_control_client, env_setup):
+        """Test real get of non-existent OAuth2 credential provider."""
+        if not real_agentcore_control_client:
+            pytest.fail("Real AWS client not available - ensure AWS credentials are configured")
         
-        mock_client.update_oauth2_credential_provider.assert_called_once()
+        print("=== Testing real get non-existent OAuth2 credential provider ===")
+        
+        # Arrange
+        fake_provider_id = f"nonexistent-{uuid4().hex[-8:]}"
+        request = GetOauth2CredentialProviderRequest(
+            credential_provider_id=fake_provider_id
+        )
+        
+        print(f"Request parameters:")
+        print(f"  - credential_provider_id: {request.credential_provider_id}")
+        
+        # Act & Assert
+        print("Making real API call to get non-existent OAuth2 credential provider...")
+        with pytest.raises(Exception) as exc_info:
+            AgentCoreIdentityClient.get_oauth2_credential_provider(request)
+        
+        error_msg = str(exc_info.value)
+        print(f"Expected error received: {error_msg}")
+        
+        # Verify it's the right kind of error (should be ResourceNotFoundException or similar)
+        assert "not found" in error_msg.lower() or "ResourceNotFoundException" in error_msg
+        
+        print(f"✓ Non-existent provider error test completed successfully")
 
 
 @pytest.fixture(scope="session")
@@ -547,13 +340,15 @@ def test_oauth2_provider(real_agentcore_control_client, env_setup):
 
 
 class TestAgentCoreIdentityClientIntegration:
-    """Integration tests for AgentCoreIdentityClient with real AWS API calls."""
+    """Integration tests for AgentCoreIdentityClient with real AWS API calls and detailed response printing."""
 
     @pytest.mark.integration
     def test_create_oauth2_provider_integration(self, real_agentcore_control_client, env_setup):
         """Integration test for creating an OAuth2 credential provider."""
         if not real_agentcore_control_client:
             pytest.fail("Real AWS client not available - ensure AWS credentials are configured")
+        
+        print("=== Integration Test: Create OAuth2 Provider ===")
         
         # Arrange
         unique_suffix = uuid4().hex[-6:]
@@ -569,30 +364,53 @@ class TestAgentCoreIdentityClientIntegration:
             )
         )
         
+        print(f"Create request parameters:")
+        print(f"  - name: {create_request.name}")
+        print(f"  - provider_type: {create_request.provider_type}")
+        print(f"  - scopes: {create_request.scopes}")
+        print(f"  - google_config.client_id: {create_request.google_config.client_id}")
+        print(f"  - google_config.client_secret: {create_request.google_config.client_secret}")
+        
         provider_id = None
         try:
             # Act
+            print("Making real API call to create OAuth2 credential provider...")
             response = AgentCoreIdentityClient.create_oauth2_credential_provider(create_request)
             provider_id = response.credential_provider_id
+            
+            # Print full response details
+            print(f"Integration Test Create API Response:")
+            print(f"  - ARN: {response.arn}")
+            print(f"  - Provider ID: {response.credential_provider_id}")
+            print(f"  - Name: {response.name}")
+            print(f"  - Provider Type: {response.provider_type}")
+            print(f"  - Status: {response.status}")
+            print(f"  - Scopes: {response.scopes}")
+            print(f"  - Created At: {response.created_at}")
             
             # Assert
             assert response.credential_provider_id is not None
             assert response.name == provider_name
-            assert response.provider_type == 'GOOGLE'
+            assert response.provider_type == 'GoogleOauth2'
             assert response.scopes == ['openid', 'email']
             assert response.status in [OAuth2CredentialProviderStatus.CREATING, OAuth2CredentialProviderStatus.READY]
             
-            print(f"Successfully created OAuth2 provider: {provider_id}")
+            print(f"✓ Integration test: OAuth2 provider created successfully: {provider_id}")
             
         finally:
             # Cleanup
             if provider_id and DELETE_AT_END:
                 try:
+                    print("Making real API call to delete OAuth2 credential provider...")
                     delete_request = DeleteOauth2CredentialProviderRequest(
                         credential_provider_id=provider_id
                     )
-                    AgentCoreIdentityClient.delete_oauth2_credential_provider(delete_request)
-                    print(f"Cleaned up OAuth2 provider: {provider_id}")
+                    delete_response = AgentCoreIdentityClient.delete_oauth2_credential_provider(delete_request)
+                    
+                    print(f"Integration Test Delete API Response:")
+                    print(f"  - Status: {delete_response.status}")
+                    
+                    print(f"✓ Integration test: Cleaned up OAuth2 provider: {provider_id}")
                 except Exception as e:
                     print(f"Failed to cleanup provider {provider_id}: {str(e)}")
 
@@ -602,18 +420,38 @@ class TestAgentCoreIdentityClientIntegration:
         if not real_agentcore_control_client:
             pytest.fail("Real AWS client not available - ensure AWS credentials are configured")
         
+        print("=== Integration Test: List OAuth2 Providers ===")
+        
         # Arrange
         list_request = ListOauth2CredentialProvidersRequest(max_results=20)
+        print(f"Request parameters: max_results={list_request.max_results}")
         
         # Act
+        print("Making real API call to list OAuth2 credential providers...")
         response = AgentCoreIdentityClient.list_oauth2_credential_providers(list_request)
+        
+        # Print full response details
+        print(f"Integration Test List API Response:")
+        print(f"  - Number of providers found: {len(response.oauth2_credential_providers)}")
+        print(f"  - Next token: {response.next_token}")
+        
+        for i, provider in enumerate(response.oauth2_credential_providers):
+            print(f"  - Provider {i+1}:")
+            print(f"    * ARN: {provider.arn}")
+            print(f"    * ID: {provider.credential_provider_id}")
+            print(f"    * Name: {provider.name}")
+            print(f"    * Provider Type: {provider.provider_type}")
+            print(f"    * Status: {provider.status}")
+            print(f"    * Scopes: {provider.scopes}")
+            print(f"    * Created At: {provider.created_at}")
+            print(f"    * Last Updated At: {provider.last_updated_at}")
         
         # Assert
         assert response is not None
         assert response.oauth2_credential_providers is not None
         assert isinstance(response.oauth2_credential_providers, list)
         
-        print(f"Successfully listed {len(response.oauth2_credential_providers)} OAuth2 providers")
+        print(f"✓ Integration test: Successfully listed {len(response.oauth2_credential_providers)} OAuth2 providers")
 
     @pytest.mark.integration
     def test_get_oauth2_provider_integration(self, test_oauth2_provider):
@@ -621,20 +459,37 @@ class TestAgentCoreIdentityClientIntegration:
         if not test_oauth2_provider:
             pytest.fail("Test OAuth2 provider not available - ensure AWS credentials are configured")
         
+        print("=== Integration Test: Get OAuth2 Provider ===")
+        
         # Arrange
         provider_id = test_oauth2_provider.credential_provider_id
         get_request = GetOauth2CredentialProviderRequest(
             credential_provider_id=provider_id
         )
         
+        print(f"Get request parameters:")
+        print(f"  - credential_provider_id: {get_request.credential_provider_id}")
+        
         # Act
+        print("Making real API call to get OAuth2 credential provider...")
         response = AgentCoreIdentityClient.get_oauth2_credential_provider(get_request)
+        
+        # Print full response details
+        print(f"Integration Test Get API Response:")
+        print(f"  - ARN: {response.arn}")
+        print(f"  - Provider ID: {response.credential_provider_id}")
+        print(f"  - Name: {response.name}")
+        print(f"  - Provider Type: {response.provider_type}")
+        print(f"  - Status: {response.status}")
+        print(f"  - Scopes: {response.scopes}")
+        print(f"  - Created At: {response.created_at}")
+        print(f"  - Last Updated At: {response.last_updated_at}")
         
         # Assert
         assert response.credential_provider_id == provider_id
         assert response.name == test_oauth2_provider.name
-        assert response.provider_type == 'GOOGLE'
+        assert response.provider_type == 'GoogleOauth2'
         assert response.scopes is not None
         assert response.created_at is not None
         
-        print(f"Successfully retrieved OAuth2 provider: {provider_id}")
+        print(f"✓ Integration test: Successfully retrieved OAuth2 provider: {provider_id}")

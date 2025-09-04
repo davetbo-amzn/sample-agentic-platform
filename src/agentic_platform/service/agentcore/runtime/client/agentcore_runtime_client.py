@@ -14,23 +14,18 @@ Environment Variables:
 """
 
 import boto3
-import json
 import logging
 import os
-import requests
+import shutil
 import subprocess
 import time
-
-from urllib.parse import quote
-from shutil import rmtree
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Optional
 from uuid import uuid4
 
 from agentic_platform.service.agentcore.types import (
     AgentRuntime,
     AgentRuntimeStatus,
-    CreateAgentRuntimeRequest,
-    # CreateAgentRuntimeResponse,
     DeleteAgentRuntimeRequest,
     DeleteAgentRuntimeResponse,
     GetAgentRuntimeRequest,
@@ -42,8 +37,13 @@ from agentic_platform.service.agentcore.types import (
 )
 
 # Configure logging
+logging.basicConfig(
+    filename='agentcore_runtime_client.log',
+    level=logging.DEBUG,
+    filemode='a',
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 # Get environment variables
 REGION = os.getenv('REGION', 'us-west-2')
@@ -124,208 +124,542 @@ class AgentCoreRuntimeClient:
         else:
             # Use normal subprocess.run for non-streaming mode
             return subprocess.run(args, capture_output=True, text=True)
-    # COMMENTED OUT - Not using create_agentcore_runtime_by_boto method
-    # We use JWT authentication with requests.post instead
-    # @staticmethod
-    # def create_agentcore_runtime_by_boto(
-    #     request: CreateAgentRuntimeRequest
-    # ) -> Any:
-    #     """
-    #     Create a new AgentCore Runtime resource using direct boto3 API calls.
-    #     DEPRECATED: Not used - we use JWT authentication with requests.post instead
-    #     """
-    #     pass
 
-    @staticmethod 
     def create_agent_runtime(
-        request: CreateAgentRuntimeRequest,
-        stream_output: bool = False
-    ) -> Any:
-        """Create an Amazon Secure Agent Runtime using intelligent template selection.
+        self,
+        name: str,
+        agent_description: Optional[str] = None,
+        entrypoint: Optional[str] = "entrypoint.py",
+        ecr_repo_uri: Optional[str] = None,
+        execution_role_arn: Optional[str] = None,
+        protocol: Optional[str] = "HTTP",
+        update_on_conflict: Optional[bool] = False
+    ) -> str:
+        """Create an Amazon Secure Agent Runtime using agentcore configure and agentcore launch.
         
-        This method creates agent deployments by:
-        1. Copying templates from local agent_deployment_template directory to unique deployment directory
-        2. Using Bedrock to intelligently select single vs multi-agent templates based on agent_description
-        3. Optionally moving multi_entrypoint.py to entrypoint.py based on selection
-        4. Running agentcore configure and launch with JWT authentication
+        This method creates the agent runtime deployment by either:
+        1. Using agent_description: Copying template files, customizing business logic using Bedrock
+        2. Using ecr_repo_uri: Skipping template creation and using provided ECR repository
+        3. Running agentcore configure and launch with streaming output
         
         Args:
-            request: CreateAgentRuntimeRequest containing agent_description, name, and other deployment parameters
-            
+            name: The name of the agent runtime (required)
+            agent_description: Natural language description (optional, required if ecr_repo_uri not provided)
+            entrypoint: Entry point file name (default: entrypoint.py)
+            ecr_repo_uri: ECR repository URI (optional, required if agent_description not provided)
+            execution_role_arn: IAM role ARN (optional) default None to create one automatically
+            protocol: Server protocol - HTTP or MCP (default: HTTP)
+            update_on_conflict: Whether to update if runtime already exists (default: false)
         Returns:
-            GetAgentRuntimeResponse with deployment details
+            String with deployment details including ARN and runtime ID
         """
         try:
+            # Validate that exactly one of agent_description or ecr_repo_uri is provided
+            if agent_description and ecr_repo_uri:
+                raise ValueError("Cannot provide both agent_description and ecr_repo_uri. Please provide exactly one.")
+            if not agent_description and not ecr_repo_uri:
+                raise ValueError("Must provide either agent_description or ecr_repo_uri.")
+            
             # Sanitize the agent name to meet AgentCore requirements
-            name = AgentCoreRuntimeClient.sanitize_name(request.name)
-            logger.info(f"Creating agent runtime '{name}': {request.agent_description[:100]}...")
+            name = self.sanitize_name(name)
             
-            # Step 1: Create deployment from local templates
-            current_file_path = os.path.abspath(__file__)
-            service_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))
-            source_dir = os.path.join(service_root, "runtime", "agent_deployment_template")
-            
-            # Step 2: Generate unique deployment directory under agent_deployments
-            unique_suffix = uuid4().hex[:8]  # Shorter suffix for cleaner names
-            unique_dir = f"deployment_{unique_suffix}"
-            agent_deployments_dir = os.path.join(service_root, "runtime", "agent_deployments")
-            os.makedirs(agent_deployments_dir, exist_ok=True)
-
-            deployment_dir = f"{agent_deployments_dir}/{unique_dir}"
-            logger.info(f"Deploying from {deployment_dir}")
-            try:
-                # Copy template to deployment directory
-                import shutil
-                shutil.copytree(source_dir, deployment_dir)
-                logger.info(f"Copied agent files from {source_dir} to {deployment_dir}")
-                
-                # Step 3: Intelligently select entrypoint template
-                template_selection = AgentCoreRuntimeClient.select_entrypoint_template(request.agent_description)
-                if template_selection == 'MULTI':
-                    shutil.move(os.path.join(deployment_dir, "multi_entrypoint.py"), 
-                               os.path.join(deployment_dir, "entrypoint.py"))
-                    logger.info("Selected multi-agent template")
-                else:
-                    logger.info("Selected single-agent template")
-                
-                # Step 4: Deploy using agentcore CLI
-                account = os.getenv('AWS_ACCOUNT', None)
-                if not account:
-                    # Try to get account from STS
-                    try:
-                        sts_client = boto3.client('sts')
-                        account = sts_client.get_caller_identity()['Account']
-                    except Exception:
-                        raise Exception('AWS_ACCOUNT must be set in environment variables or AWS credentials must be available for STS.')
-                
-                region = os.getenv('REGION', os.getenv('AWS_REGION', os.getenv("AWS_DEFAULT_REGION", 'us-west-2')))
-                
-                # Change to the deployment directory
-                original_cwd = os.getcwd()
-                os.chdir(deployment_dir)
-                
-                try:
-                    # Handle None values for CLI
-                    execution_role_arn = request.execution_role_arn if request.execution_role_arn else 'None'
-                    ecr_repo_uri = request.ecr_repo_uri if request.ecr_repo_uri else 'None'
-
-                    # Configure agentcore with JWT authentication
-                    args = [
-                        'agentcore', 'configure', 
-                        '--name', name,
-                        '--execution-role', execution_role_arn, 
-                        '--ecr', ecr_repo_uri, 
-                        '--entrypoint', request.entrypoint,
-                        '--requirements-file', 'requirements.txt',
-                        '--disable-otel',
-                        '--protocol', request.protocol,
-                        '--region', region,
-                        '--authorizer-config', f"{json.dumps({'customJWTAuthorizer': {'discoveryUrl': COGNITO_DISCOVERY_URL,'allowedClients': [USER_POOL_CLIENT_ID]}})}",
-                    ]
-
-                    logger.info(f"Running agentcore configure command: {' '.join(args)}")
-                    result = AgentCoreRuntimeClient._run_subprocess_with_optional_streaming(args, stream_output)
-                    logger.info(f'Agentcore configure completed with return code {result.returncode}')
-                    
-                    if result.returncode != 0:
-                        raise Exception(f"Error during agentcore configure.\nstdout: {result.stdout}\nstderr: {result.stderr}")
-                    else:
-                        logger.info('agentcore configure completed successfully.')
-
-                    # Modify .bedrock_agentcore.yaml configuration
-                    config_file = os.path.join(deployment_dir, '.bedrock_agentcore.yaml')
-                    
-                    with open(config_file, 'r') as config_in:
-                        config_lines = config_in.readlines()
-                        logger.info(f'Got config lines: {"".join(config_lines)}')
-                        
-                        final_config_lines = ''
-                        for line in config_lines:
-                            if 'execution_role: ' in line:
-                                if not line.strip().endswith('None'):
-                                    final_config_lines += line
-                                else:
-                                    logger.info(f"Skipping execution role None")
-                            elif 'execution_role_auto_create: ' in line:
-                                if execution_role_arn == 'None':
-                                    line = line.replace('false', 'true')
-                                final_config_lines += line
-                            elif 'ecr_repository: ' in line:
-                                if not line.strip().endswith('None'):
-                                    final_config_lines += line
-                            elif 'ecr_auto_create: ' in line:
-                                if ecr_repo_uri == 'None':
-                                    line = line.replace('false', 'true')
-                                final_config_lines += line
-                            else:
-                                final_config_lines += line
-
-                    logger.info(f"Final config lines before running agentcore launch: {final_config_lines}")
-                    
-                    with open(config_file, 'w') as config_out:
-                        config_out.write(final_config_lines)
-                        
-                    # Run agentcore launch
-                    launch_args = ['agentcore', 'launch']
-                    if request.update_on_conflict:
-                        launch_args.append('--auto-update-on-conflict')
-                        
-                    logger.info(f"Running agentcore launch command: {' '.join(launch_args)}")
-                    result = AgentCoreRuntimeClient._run_subprocess_with_optional_streaming(launch_args, stream_output)
-                    logger.info(f'Agentcore launch completed with return code {result.returncode}')
-                    
-                    if result.returncode != 0:
-                        raise Exception(f"Error during agentcore launch.\nstdout: {result.stdout}\nstderr: {result.stderr}")
-
-                    # Extract agent ARN from result
-                    agent_arn = None
-                    lines = result.stderr.split('\n')
-                    for line in lines:
-                        if 'Deployment completed successfully - Agent: ' in line:
-                            logger.info(f"Found agent line: {line}")
-                            agent_arn = line.split(' Agent: ')[1]
-                            break
-                            
-                    if not agent_arn:
-                        # Try stdout as well
-                        lines = result.stdout.split('\n') 
-                        for line in lines:
-                            if 'Agent: arn:' in line:
-                                logger.info(f"Found agent ARN in stdout: {line}")
-                                agent_arn = line.split('Agent: ')[1].strip()
-                                break
-                    
-                    if not agent_arn:
-                        logger.warning("Could not extract agent ARN from agentcore launch output")
-                        agent_arn = f"arn:aws:bedrock-agentcore:{region}:{account}:runtime/{name}"
-                        
-                    agent_runtime_id = agent_arn.split('/')[-1]
-                    logger.info(f'Created agent runtime with ARN: {agent_arn}, ID: {agent_runtime_id}')
-                    
-                    return AgentCoreRuntimeClient.get_agentcore_runtime(
-                        GetAgentRuntimeRequest(
-                            agent_runtime_id=agent_runtime_id
-                        )
-                    )
-                    
-                finally:
-                    # Return to original directory
-                    os.chdir(original_cwd)
-                
-            except Exception as e:
-                # Clean up deployment directory on error
-                try:
-                    if os.path.exists(deployment_dir):
-                        import shutil
-                        shutil.rmtree(deployment_dir)
-                        logger.info(f"Cleaned up deployment directory on error: {deployment_dir}")
-                except Exception as cleanup_err:
-                    logger.warning(f"Failed to cleanup deployment directory on error: {cleanup_err}")
-                raise
+            if agent_description:
+                logger.info(f"Creating agent runtime '{name}' from description: {agent_description[:100]}...")
+                return self._create_runtime_from_description(
+                    name, agent_description, entrypoint, ecr_repo_uri, 
+                    execution_role_arn, protocol, update_on_conflict
+                )
+            else:
+                logger.info(f"Creating agent runtime '{name}' from ECR repository: {ecr_repo_uri}")
+                return self._create_runtime_from_ecr(
+                    name, ecr_repo_uri, entrypoint, execution_role_arn, 
+                    protocol, update_on_conflict
+                )
             
         except Exception as e:
             logger.error(f"Error creating agent runtime: {str(e)}")
             raise Exception(f"Failed to create agent runtime: {str(e)}")
+
+    def _create_runtime_from_description(
+        self,
+        name: str,
+        agent_description: str,
+        entrypoint: str,
+        ecr_repo_uri: Optional[str],
+        execution_role_arn: Optional[str],
+        protocol: str,
+        update_on_conflict: bool
+    ) -> str:
+        """Create agent runtime using agent description (template-based workflow)."""
+        # Step 1: Create deployment from existing template code
+        project_root = Path(__file__).parent.parent.parent
+        source_dir = project_root / "runtime" / "agent_deployment_template"
+        
+        if not source_dir.exists():
+            raise FileNotFoundError(f"Agent templates source directory not found: {source_dir}")
+        
+        # Step 2: Generate unique deployment directory under agent_deployments
+        unique_suffix = uuid4().hex[:8]
+        unique_dir = f"deployment_{unique_suffix}"
+        deployment_dir = f"{project_root}/agent_deployments/{unique_dir}"
+
+        try:
+            # Copy template source to deployment directory
+            shutil.copytree(source_dir, deployment_dir)
+            logger.info(f"Copied agent files from {source_dir} to {deployment_dir}")
+            
+            # Step 2.1: Select appropriate template (SINGLE or MULTI)
+            template_selection = self.select_entrypoint_template(agent_description)
+            logger.info(f"Selected template: {template_selection}")
+            
+            # Step 2.2: Set up the correct entrypoint file
+            if template_selection == 'MULTI':
+                shutil.move(f"{deployment_dir}/multi_entrypoint.py", f"{deployment_dir}/entrypoint.py")
+                logger.info("Using multi-agent template as entrypoint.py")
+            else:
+                # SINGLE template is already entrypoint.py, remove multi_entrypoint.py
+                os.remove(f"{deployment_dir}/multi_entrypoint.py")
+                logger.info("Using single-agent template as entrypoint.py")
+            
+            # Step 3: Customize business logic using Bedrock
+            logger.info("Step 3: Customizing business logic with Bedrock...")
+            
+            # Read the selected template content
+            with open(f"{deployment_dir}/entrypoint.py", 'r') as f:
+                template_content = f.read()
+            
+            # Read the requirements.txt content
+            with open(f"{deployment_dir}/requirements.txt", 'r') as f:
+                requirements_content = f.read()
+            
+            # Customize the business logic while preserving architecture
+            try:
+                customized_entrypoint, updated_requirements = self.customize_business_logic(
+                    agent_description, 
+                    template_content, 
+                    requirements_content
+                )
+                
+                # Write the customized files back
+                with open(f"{deployment_dir}/entrypoint.py", 'w') as f:
+                    f.write(customized_entrypoint)
+                
+                with open(f"{deployment_dir}/requirements.txt", 'w') as f:
+                    f.write(updated_requirements)
+                
+                logger.info("Successfully customized entrypoint.py and requirements.txt")
+                
+            except Exception as customize_error:
+                logger.warning(f"Failed to customize business logic: {customize_error}")
+                logger.info("Proceeding with original template files")
+            
+            # Step 4: Deploy using agentcore CLI
+            return self._deploy_with_agentcore_cli(
+                deployment_dir, name, entrypoint, ecr_repo_uri, 
+                execution_role_arn, protocol, update_on_conflict, agent_description
+            )
+            
+        except Exception as e:
+            # Clean up deployment directory on error
+            try:
+                if Path(deployment_dir).exists():
+                    shutil.rmtree(deployment_dir)
+                    logger.info(f"Cleaned up deployment directory on error: {deployment_dir}")
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to cleanup deployment directory on error: {cleanup_err}")
+            raise
+
+    def _create_runtime_from_ecr(
+        self,
+        name: str,
+        ecr_repo_uri: str,
+        entrypoint: str,
+        execution_role_arn: Optional[str],
+        protocol: str,
+        update_on_conflict: bool
+    ) -> str:
+        """Create agent runtime using ECR repository (direct deployment workflow)."""
+        # For ECR-based deployment, we skip template creation and go directly to agentcore CLI
+        # Create a minimal deployment directory for agentcore CLI to work in
+        project_root = Path(__file__).parent.parent.parent
+        unique_suffix = uuid4().hex[:8]
+        unique_dir = f"deployment_{unique_suffix}"
+        deployment_dir = f"{project_root}/agent_deployments/{unique_dir}"
+        
+        try:
+            # Create minimal deployment directory
+            os.makedirs(deployment_dir, exist_ok=True)
+            logger.info(f"Created deployment directory for ECR-based runtime: {deployment_dir}")
+            
+            # Deploy using agentcore CLI with provided ECR repository
+            return self._deploy_with_agentcore_cli(
+                deployment_dir, name, entrypoint, ecr_repo_uri, 
+                execution_role_arn, protocol, update_on_conflict, None
+            )
+            
+        except Exception as e:
+            # Clean up deployment directory on error
+            try:
+                if Path(deployment_dir).exists():
+                    shutil.rmtree(deployment_dir)
+                    logger.info(f"Cleaned up deployment directory on error: {deployment_dir}")
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to cleanup deployment directory on error: {cleanup_err}")
+            raise
+
+    def _deploy_with_agentcore_cli(
+        self,
+        deployment_dir: str,
+        name: str,
+        entrypoint: str,
+        ecr_repo_uri: Optional[str],
+        execution_role_arn: Optional[str],
+        protocol: str,
+        update_on_conflict: bool,
+        agent_description: Optional[str]
+    ) -> str:
+        """Common method to deploy using agentcore CLI."""
+        # Get environment variables for agentcore CLI
+        account = os.getenv('AWS_ACCOUNT', None)
+        if not account:
+            # Try to get account from STS
+            try:
+                sts_client = boto3.client('sts')
+                account = sts_client.get_caller_identity()['Account']
+            except Exception:
+                raise Exception('AWS_ACCOUNT must be set in environment variables or AWS credentials must be available for STS.')
+        
+        region = os.getenv('REGION', os.getenv('AWS_REGION', os.getenv("AWS_DEFAULT_REGION", 'us-west-2')))
+        
+        # Change to the deployment directory
+        original_cwd = os.getcwd()
+        os.chdir(str(deployment_dir))
+        
+        try:
+            # Handle None values for CLI
+            if execution_role_arn is None:
+                execution_role_arn = 'None'
+            
+            if ecr_repo_uri is None:
+                ecr_repo_uri = 'None'
+
+            # Find the agentcore executable
+            import sys
+            
+            # Try to find the project's virtual environment
+            project_root = Path(__file__).parent.parent.parent
+            possible_venv_locations = [
+                project_root / '.venv' / 'bin',  # Standard .venv location
+                Path.cwd() / '.venv' / 'bin',    # Current directory .venv
+                Path(sys.executable).parent,     # Current Python bin directory
+            ]
+            
+            agentcore_exe = None
+            for venv_path in possible_venv_locations:
+                potential_exe = venv_path / 'agentcore'
+                if potential_exe.exists():
+                    agentcore_exe = potential_exe
+                    logger.info(f"Found agentcore executable at {agentcore_exe}")
+                    break
+            
+            if not agentcore_exe:
+                # Final fallback - try to use which/where command
+                try:
+                    which_result = shutil.which('agentcore')
+                    if which_result:
+                        agentcore_exe = Path(which_result)
+                        logger.info(f"Found agentcore using which command: {agentcore_exe}")
+                    else:
+                        raise Exception(f"Could not find agentcore executable. Tried paths: {[str(p / 'agentcore') for p in possible_venv_locations]}. Also tried 'which agentcore' but not found.")
+                except Exception:
+                    raise Exception(f"Could not find agentcore executable. Tried paths: {[str(p / 'agentcore') for p in possible_venv_locations]}")
+            
+            # Run agentcore configure
+            args = [
+                str(agentcore_exe), 'configure', 
+                '--name', name,
+                '--execution-role', execution_role_arn, 
+                '--ecr', ecr_repo_uri, 
+                '--entrypoint', entrypoint,
+                '--requirements-file', 'requirements.txt',
+                '--protocol', protocol,
+                '--region', region
+            ]
+
+            logger.info(f"Running agentcore configure command: {' '.join(args)}")
+            
+            # Use pipes for real-time streaming and provide stdin to answer OAuth prompt
+            process = subprocess.Popen(args, 
+                                      stdout=subprocess.PIPE, 
+                                      stderr=subprocess.STDOUT,
+                                      stdin=subprocess.PIPE,
+                                      text=True)
+            
+            # Provide "no" input to the OAuth prompt
+            try:
+                process.stdin.write("no\n")
+                process.stdin.flush()
+                process.stdin.close()
+            except Exception as e:
+                logger.info(f"Failed to write to stdin: {e}")
+            
+            # Stream output in real-time
+            stdout_data = ""
+            while True:
+                output = process.stdout.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    stdout_data += output
+                    logger.info(f"agentcore configure: {output.strip()}")
+            
+            returncode = process.poll()
+            logger.info(f'Agentcore configure completed with return code {returncode}')
+            
+            if returncode != 0:
+                raise Exception(f"Error during agentcore configure.\noutput: {stdout_data}")
+            else:
+                logger.info('agentcore configure completed successfully.')
+
+            # Modify .bedrock_agentcore.yaml configuration
+            config_file = os.path.join(str(deployment_dir), '.bedrock_agentcore.yaml')
+            
+            with open(config_file, 'r') as config_in:
+                config_lines = config_in.readlines()
+                logger.info(f'Got config lines: {"".join(config_lines)}')
+                
+                final_config_lines = ''
+                for line in config_lines:
+                    if 'execution_role: ' in line:
+                        if not line.strip().endswith('None'):
+                            final_config_lines += line
+                        else:
+                            logger.info(f"Skipping execution role None")
+                    elif 'execution_role_auto_create: ' in line:
+                        logger.info(f"execution role arn is {execution_role_arn}, type {type(execution_role_arn)}")
+                        if execution_role_arn == 'None':
+                            line = line.replace('false', 'true')
+                        final_config_lines += line
+                    elif 'ecr_repository: ' in line:
+                        if not line.strip().endswith('None'):
+                            final_config_lines += line
+                    elif 'ecr_auto_create: ' in line:
+                        logger.info(f"ecr_repo_uri == {ecr_repo_uri}, type {type(ecr_repo_uri)}")
+                        if ecr_repo_uri == 'None':
+                            line = line.replace('false', 'true')
+                        final_config_lines += line
+                    else:
+                        final_config_lines += line
+
+            logger.info(f"Final config lines before running agentcore launch: {final_config_lines}")
+            
+            with open(config_file, 'w') as config_out:
+                config_out.write(final_config_lines)
+                
+            # Run agentcore launch
+            launch_args = [str(agentcore_exe), 'launch']
+            if update_on_conflict:
+                launch_args.append('--auto-update-on-conflict')
+                
+            logger.info(f"Running agentcore launch command: {' '.join(launch_args)}")
+            
+            # Use pipes for real-time streaming
+            process = subprocess.Popen(launch_args, 
+                                      stdout=subprocess.PIPE, 
+                                      stderr=subprocess.STDOUT,
+                                      text=True)
+            
+            # Stream output in real-time
+            stdout_data = ""
+            while True:
+                output = process.stdout.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    stdout_data += output
+                    logger.info(f"agentcore launch: {output.strip()}")
+            
+            returncode = process.poll()
+            logger.info(f'Agentcore launch completed with return code {returncode}')
+            
+            if returncode != 0:
+                raise Exception(f"Error during agentcore launch.\noutput: {stdout_data}")
+
+            # Extract agent ARN from result
+            agent_arn = None
+            lines = stdout_data.split('\n')
+            for line in lines:
+                if 'Deployment completed successfully - Agent: ' in line:
+                    logger.info(f"Found agent line: {line}")
+                    agent_arn = line.split(' Agent: ')[1]
+                    break
+                    
+            if not agent_arn:
+                # Try looking for other patterns in output
+                for line in lines:
+                    if 'Agent: arn:' in line:
+                        logger.info(f"Found agent ARN in output: {line}")
+                        agent_arn = line.split('Agent: ')[1].strip()
+                        break
+            
+            if not agent_arn:
+                logger.warning("Could not extract agent ARN from agentcore launch output")
+                agent_arn = f"arn:aws:bedrock-agentcore:{region}:{account}:runtime/{name}"
+                
+            agent_runtime_id = agent_arn.split('/')[-1]
+            logger.info(f'Created agent runtime with ARN: {agent_arn}, ID: {agent_runtime_id}')
+            
+            # Get runtime details
+            try:
+                response = agentcore_control_client.get_agent_runtime(agentRuntimeId=agent_runtime_id)
+                logger.info(f"Successfully retrieved runtime details for {agent_runtime_id}")
+                
+                description_info = f"\n\nAgent Description: {agent_description}" if agent_description else f"\n\nECR Repository: {ecr_repo_uri}"
+                
+                return f"Successfully created agent runtime:\n\nRuntime Name: {name}\nRuntime ID: {agent_runtime_id}\nRuntime ARN: {agent_arn}\nStatus: {response.get('status', 'UNKNOWN')}\n\nDeployment Directory: {deployment_dir}{description_info}\n\nYou can now invoke this runtime using the invoke_agent_runtime tool."
+                
+            except Exception as e:
+                logger.warning(f"Could not retrieve runtime details: {e}")
+                description_info = f"\n\nAgent Description: {agent_description}" if agent_description else f"\n\nECR Repository: {ecr_repo_uri}"
+                return f"Successfully created agent runtime:\n\nRuntime Name: {name}\nRuntime ID: {agent_runtime_id}\nRuntime ARN: {agent_arn}\n\nDeployment Directory: {deployment_dir}{description_info}"
+                
+        finally:
+            # Return to original directory
+            os.chdir(original_cwd)
+
+    def customize_business_logic(
+        self, 
+        user_description: str, 
+        template_content: str, 
+        requirements_content: str
+    ) -> tuple[str, str]:
+        """Customize the business logic in the entrypoint template while preserving architecture.
+        
+        This is step 3 of the agent runtime creation process. It takes the selected template
+        and modifies only the business logic to match the user's requirements while keeping
+        the overall code architecture pattern intact.
+        
+        Args:
+            user_description: Natural language description of what the agent should do
+            template_content: The content of the selected entrypoint.py template
+            requirements_content: The content of the default requirements.txt
+            
+        Returns:
+            Tuple of (modified_entrypoint_content, updated_requirements_content)
+        """
+        try:
+            # Construct the prompt for customizing business logic
+            prompt_template = """You are an expert Python developer specializing in AI agent development. Your task is to customize the business logic in an agent entrypoint template while preserving the overall architecture pattern.
+
+# IMPORTANT INSTRUCTIONS:
+1. KEEP the overall code structure, imports, app setup, models, and handler function signature EXACTLY as they are
+2. ONLY modify the business logic to match the user's requirements using replace-in-file techniques:
+      a) Find the blocks of example template code that need replacing.
+      b) Replace with your new business logic per the user's requirements.
+      c) Output format would be:
+            ```
+            ------- SEARCH
+            [one exact content string (including newlines, whitespace, and punctuation) to find in the file]
+            =======
+            [one new content block to replace it with]
+            +++++++ REPLACE
+            ```
+3. Preserve all existing architectural patterns (BedrockAgentCoreApp, Pydantic models, etc.)
+4. Keep all logging, error handling, and response formatting as-is
+5. If you need a web tool use the example at the top of the template as-is and list the agentic_web_browser_tool in the tools for the agent rather than using other web agent strategies.
+6. If you need additional Python packages, list them at the end after "REQUIREMENTS_UPDATE:"
+
+USER REQUIREMENTS:
+{user_description}
+
+CURRENT ENTRYPOINT TEMPLATE:
+{template_content}
+
+CURRENT REQUIREMENTS.TXT:
+{requirements_content}
+
+
+# OUTPUT FORMAT:
+<entrypoint_updates>
+------- SEARCH
+[exact content to find in the file]
+=======
+[new content to replace it with]
++++++++ REPLACE
+------- SEARCH
+[next content to find in the file]
+=======
+[new content to replace it with]
++++++++ REPLACE
+</entrypoint_updates>
+
+<requirements_updates>
+[list of additional python modules to add at the end of requirements.txt, one per line]
+</requirements_updates>
+# END OUTPUT FORMAT
+
+Now output the results without further commentary
+
+"""
+
+            formatted_prompt = prompt_template.format(
+                user_description=user_description,
+                template_content=template_content,
+                requirements_content=requirements_content
+            )
+            
+            # Prepare the message for Bedrock Converse API
+            messages = [
+                {
+                    "role": "user",
+                    "content": [{"text": formatted_prompt}]
+                }
+            ]
+            
+            logger.info(f"Customizing business logic for: {user_description[:100]}...")
+            
+            response = bedrock_runtime_client.converse(
+                modelId="us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+                messages=messages,
+                inferenceConfig={
+                    "maxTokens": 4000,
+                    "temperature": 0.2,  # Low temperature for consistent, reliable code modification
+                    "topP": 0.9
+                }
+            )
+            
+            # Extract the response
+            response_text = response['output']['message']['content'][0]['text'].strip()
+            logger.info(f"Bedrock response: {response_text}")
+
+            entrypoint_updates = response_text.split('<entrypoint_updates>')[1].split('</entrypoint_updates>')[0]
+            requirements_updates = response_text.split('<requirements_updates>')[1].split('</requirements_updates>')[0]
+            
+            new_entrypoint = template_content
+            updated_requirements = requirements_content
+            logger.info(f"Got entrypoint_updates\n{entrypoint_updates}")
+            logger.info(f"STARTING REPLACEMENTS")
+            for update in entrypoint_updates.split('+++++++ REPLACE'):
+                if update.strip() == '':
+                    continue
+                logger.info(f"Got update\n{update}...")
+                update = update.replace('------- SEARCH', '')
+                search, replacement = update.split("=======")
+                search = search.strip()
+                # replacement = replacement.strip()
+                logger.info(f"Replacing\n{search}\nwith \n{replacement} in entrypoint.")
+                new_entrypoint = new_entrypoint.replace(search, replacement)
+            
+            if requirements_content not in requirements_updates:
+                updated_requirements = requirements_content + requirements_updates
+            else:
+                updated_requirements = requirements_updates
+            logger.info(f"Returning new entrypoint\n{new_entrypoint} \nand requirements \n{updated_requirements}")
+            return new_entrypoint, updated_requirements
+            
+        except Exception as e:
+            logger.error(f"Failed to customize business logic via Bedrock: {e}")
+            raise e
 
     @staticmethod
     def delete_agentcore_runtime(
@@ -364,7 +698,7 @@ class AgentCoreRuntimeClient:
 
     @staticmethod
     def delete_tmpdir(tmpdir):
-        return rmtree(tmpdir)
+        return shutil.rmtree(tmpdir)
     
     @staticmethod
     def get_agentcore_runtime(
@@ -421,7 +755,6 @@ class AgentCoreRuntimeClient:
                 agent_runtime_artifact=response['agentRuntimeArtifact'],
                 network_configuration=response['networkConfiguration'],
                 protocol_configuration=response['protocolConfiguration'],
-                authorizer_configuration=response['authorizerConfiguration']
             )
             
         except Exception as e:
@@ -440,135 +773,6 @@ class AgentCoreRuntimeClient:
         os.makedirs(tmpdir)
         return tmpdir
         
-    # @staticmethod
-    # def _invoke_with_jwt(request: InvokeAgentRuntimeRequest) -> InvokeAgentRuntimeResponse:
-    #     """
-    #     Invoke AgentCore Runtime using JWT authentication via direct HTTP request.
-        
-    #     Generates fresh JWT token from Cognito credentials, falls back to cached token.
-        
-    #     Args:
-    #         request: InvokeAgentRuntimeRequest containing invocation parameters
-            
-    #     Returns:
-    #         InvokeAgentRuntimeResponse with the agent response
-    #     """
-    #     logger.info("Using JWT token authentication for AgentCore Runtime invocation")
-    #     logger.info("Using JWT token authentication for AgentCore Runtime invocation")
-
-    #     # Construct the URL from the ARN
-    #     # ARN format: arn:aws:bedrock-agentcore:region:account:runtime/runtime-id
-    #     arn_parts = request.agent_runtime_arn.split(':')
-    #     if len(arn_parts) < 6:
-    #         raise ValueError(f"Invalid AgentCore Runtime ARN format: {request.agent_runtime_arn}")
-        
-    #     region = arn_parts[3]
-        
-    #     # Construct the invoke URL according to AWS documentation:
-    #     # POST /runtimes/agentRuntimeArn/invocations?qualifier=qualifier HTTP/1.1
-    #     # URL encode the ARN as shown in the OAuth documentation example
-    #     # base_url = f"https://bedrock-agentcore.{region}.amazonaws.com"
-    #     escaped_agent_arn = quote(request.agent_runtime_arn, safe='')
-    #     # invoke_url = f"{base_url}/runtimes/{escaped_agent_arn}/invocations?qualifier=DEFAULT"
-    #     invoke_url = f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{escaped_agent_arn}/invocations?qualifier=DEFAULT"
-
-    #     # Prepare headers according to AWS documentation
-    #     headers = {
-    #         'Authorization': f'Bearer {request.token}',
-    #         'Content-Type': request.contentType or 'application/json',
-    #         'Accept': request.accept or '*/*'
-    #     }
-        
-    #     # Add optional headers with correct header names from AWS documentation
-    #     if request.mcpSessionId:
-    #         headers['Mcp-Session-Id'] = request.mcpSessionId
-            
-    #     if request.runtimeSessionId:
-    #         headers['X-Amzn-Bedrock-AgentCore-Runtime-Session-Id'] = request.runtimeSessionId
-            
-    #     if request.mcpProtocolVersion:
-    #         headers['Mcp-Protocol-Version'] = request.mcpProtocolVersion
-            
-    #     if request.runtimeUserId:
-    #         headers['X-Amzn-Bedrock-AgentCore-Runtime-User-Id'] = request.runtimeUserId
-            
-    #     if request.traceId:
-    #         headers['X-Amzn-Trace-Id'] = request.traceId
-            
-    #     if request.traceParent:
-    #         headers['traceparent'] = request.traceParent
-            
-    #     if request.traceState:
-    #         headers['tracestate'] = request.traceState
-            
-    #     if request.baggage:
-    #         headers['baggage'] = request.baggage
-        
-    #     # Prepare query parameters
-    #     params = {}
-    #     if request.qualifier:
-    #         params['qualifier'] = request.qualifier
-        
-    #     # Prepare payload
-    #     payload_data = json.dumps(request.payload)
-    #     logger.info(f"Invoking AgentCore at {invoke_url} with params {params},payload data {payload_data}, and headers {headers}")
-    #     # Make the HTTP request
-    #     try:
-    #         response = requests.post(
-    #             invoke_url,
-    #             headers=headers,
-    #             params=params,
-    #             data=payload_data,
-    #             timeout=30
-    #         )
-    #         logging.info(f"Cognito JWT response {response}")
-    #         # Check for HTTP errors
-    #         response.raise_for_status()
-            
-    #         # Create response object
-    #         return InvokeAgentRuntimeResponse(
-    #             statusCode=response.status_code,
-    #             contentType=response.headers.get('content-type', 'application/json'),
-    #             response=response.content  # Raw bytes similar to StreamingBody
-    #         )
-            
-    #     except requests.exceptions.RequestException as e:
-    #         logger.error(f"HTTP request failed: {str(e)}")
-    #         raise Exception(f"Failed to invoke AgentCore Runtime via JWT: {str(e)}")
-
-    # @staticmethod
-    # def invoke_agentcore_runtime(
-    #     request: InvokeAgentRuntimeRequest
-    # ) -> InvokeAgentRuntimeResponse:
-    #     """
-    #     Invoke an AgentCore Runtime agent.
-        
-    #     Sends a request to an agent or tool hosted in an Amazon Bedrock AgentCore Runtime 
-    #     and receives responses in real-time.
-        
-    #     Uses JWT authentication exclusively - AgentCore runtimes configured with JWT
-    #     authorization do not support IAM authentication fallback.
-        
-    #     Args:
-    #         request: InvokeAgentRuntimeRequest containing invocation parameters
-            
-    #     Returns:
-    #         InvokeAgentRuntimeResponse with the agent response
-            
-    #     Raises:
-    #         Exception: If JWT authentication or runtime invocation fails
-    #     """
-    #     logger.info(f"Invoking AgentCore Runtime with ARN: {request.agent_runtime_arn}")
-    #     request.jwt = request.headers['Authentication'].split('Bearer ')[1]
-    #     logger.info(f"calling _invoke_with_jwt({request})")
-    #     try:
-    #         # Use JWT authentication exclusively - no IAM fallback
-    #         logger.info(f"about to call _invoke_with_jwt with request {request} ")
-    #         return AgentCoreRuntimeClient._invoke_with_jwt(request)
-                
-    #     except Exception as e:
-    #         logger.error(f"Error invoking AgentCore Runtime via JWT: {str(e)}")
-    #         raise Exception(f"JWT authentication failed for AgentCore Runtime: {str(e)}")
 
     @staticmethod
     def list_agent_runtimes(
@@ -649,15 +853,9 @@ class AgentCoreRuntimeClient:
         logger.info(f"Updating AgentCore Runtime with request: {request}, type {type(request)}")
         # first get the old runtime details:
         old_runtime = None
-        # logger.info(f"UpdateAgentRuntimeRequest attrs: {vars(request)}")
-        # logger.info(f"Is there an agent_runtime_id property? {hasattr(request, 'agent_runtime_id')}")
-        # logger.info(f"how about the vars way? vars(request)['agent_runtime_id'] = {vars(request)['agent_runtime_id']}")
-        # logger.info(f"How about the property way? (next line crashes for some reason) request.agent_runtime_id = ")
-        # logger.info(request.agent_runtime_id)
         agent_runtime_id = request.agent_runtime_id
         logger.info(f"Got agent_runtime_id {agent_runtime_id}")
         try: 
-
             old_runtime = AgentCoreRuntimeClient.get_agentcore_runtime(
                 GetAgentRuntimeRequest(
                     agent_runtime_id=agent_runtime_id
@@ -665,29 +863,38 @@ class AgentCoreRuntimeClient:
             )
             logger.info(f"Got old runtime {old_runtime}")
         except Exception as e:
-            logger.info(f"Error updating runtime: {str(e)}")
+            logger.info(f"Error getting runtime details: {str(e)}")
             raise e
         try:
-            # Prepare update parameters - only include non-None values
-            # Only perform update if we have parameters to update
+            # Prepare update parameters - use values from request if provided, otherwise use values from existing runtime
             update_request_params = {
-                "agent_runtime_id": old_runtime.agent_runtime_id,
-                "agentRuntimeArtifact": request.agentRuntimeArtifact,
-                "roleArn": request.roleArn,
-                "networkConfiguration": request.networkConfiguration,
-                "protocolConfiguration": request.protocolConfiguration,
-                "authorizerConfiguration": request.authorizerConfiguration
+                "agentRuntimeId": old_runtime.agent_runtime_id,
+                "agentRuntimeArtifact": request.agent_runtime_artifact if hasattr(request, 'agent_runtime_artifact') and request.agent_runtime_artifact else old_runtime.agent_runtime_artifact,
+                "roleArn": request.roleArn if hasattr(request, 'roleArn') and request.roleArn else old_runtime.role_arn,
+                "networkConfiguration": request.network_configuration if hasattr(request, 'network_configuration') and request.network_configuration else old_runtime.network_configuration,
+                "protocolConfiguration": request.protocol_configuration if hasattr(request, 'protocol_configuration') and request.protocol_configuration else old_runtime.protocol_configuration
             }
-            if hasattr(request, 'clientToken') and request.clientToken:
-                update_request_params['clientToken'] = request.clientToken
-            if hasattr(request, 'description') and request.description:
+            
+            # Handle optional fields - skip client token as it's optional and can cause validation errors
+            if hasattr(request, 'client_token') and request.client_token and len(request.client_token) >= 33:
+                update_request_params['clientToken'] = request.client_token
+                
+            if hasattr(request, 'description') and request.description and len(request.description) > 0:
                 update_request_params['description'] = request.description
             else:
-                update_request_params['description'] = old_runtime['description']
+                # Use existing description or default description if none exists (cannot be empty)
+                existing_description = getattr(old_runtime, 'description', '')
+                if existing_description and len(existing_description) > 0:
+                    update_request_params['description'] = existing_description
+                else:
+                    update_request_params['description'] = f"Updated runtime configuration at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                
+            # Handle environment variables if provided
             if hasattr(request, 'environmentVariables') and request.environmentVariables:
                 update_request_params['environmentVariables'] = request.environmentVariables
             else:
-                update_request_params['environmentVariables'] = old_runtime.environmentVariables
+                # Use existing environment variables if available
+                update_request_params['environmentVariables'] = getattr(old_runtime, 'environmentVariables', {})
 
             logger.info(f"Update params currently {update_request_params}")
             # Update the agent runtime
@@ -770,7 +977,7 @@ class AgentCoreRuntimeClient:
                 
                 # Runtime is still creating/updating, wait before next check
                 if current_status in creating_states:
-                    logger.info(f"Runtime {agent_runtime_id} still {current_status.lower()}, waiting {poll_interval}s before next check...")
+                    logger.info(f"Runtime {agent_runtime_id} still {current_status}, waiting {poll_interval}s before next check...")
                     time.sleep(poll_interval)
                 else:
                     # Unexpected status, log warning but continue waiting
@@ -800,15 +1007,22 @@ class AgentCoreRuntimeClient:
             
         Returns:
             Sanitized agent name that meets AgentCore requirements
+            
+        Raises:
+            ValueError: If the name cannot be sanitized to meet requirements
         """
         import re
+        
+        # Handle empty string case first
+        if not original_name:
+            raise ValueError("Agent name cannot be empty. Please provide a name that starts with a letter.")
         
         # Replace invalid characters with underscores
         sanitized_name = re.sub(r'[^a-zA-Z0-9_]', '_', original_name)
         
         # Ensure it starts with a letter
         if not sanitized_name or not sanitized_name[0].isalpha():
-            sanitized_name = 'agent_' + sanitized_name
+            raise ValueError(f"Agent name '{original_name}' must start with a letter. Please provide a name that starts with a letter.")
         
         # Truncate to 48 characters if needed
         if len(sanitized_name) > 48:
@@ -819,7 +1033,7 @@ class AgentCoreRuntimeClient:
         
         # Ensure it's not empty after sanitization
         if not sanitized_name:
-            sanitized_name = 'agent_runtime'
+            raise ValueError(f"Agent name '{original_name}' could not be sanitized to meet requirements. Please provide a name that starts with a letter and contains valid characters.")
             
         if original_name != sanitized_name:
             logger.info(f"Sanitized agent name from '{original_name}' to '{sanitized_name}'")

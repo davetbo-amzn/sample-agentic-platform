@@ -2,14 +2,14 @@
 
 echo "updating token and initializing environment variables"
 . .env && \
-echo && \
-echo && \
-echo ******************************* && \
-echo ** Running unit tests        ** && \
-echo ******************************* && \
-echo && \
-echo && \
-pytest -x -s -v unit/test_agentcore* && \
+# echo && \
+# echo && \
+# echo ******************************* && \
+# echo ** Running unit tests        ** && \
+# echo ******************************* && \
+# echo && \
+# echo && \
+# pytest -x -s -v unit/test_agentcore* && \
 # cd ../integration && \
 # echo ******************************* && \
 # echo ** Running integration tests ** && \

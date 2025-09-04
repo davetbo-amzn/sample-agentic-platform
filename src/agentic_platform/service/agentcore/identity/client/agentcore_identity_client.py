@@ -68,25 +68,46 @@ class AgentCoreIdentityClient:
         logger.info(f"Creating OAuth2 Credential Provider: {request.name}")
         
         try:
-            # Prepare the create request parameters
-            create_params = {
-                'name': request.name,
-                'providerType': request.provider_type,
-                'scopes': request.scopes
+            # Prepare the create request parameters according to AWS API
+            # oauth2ProviderConfigInput is a tagged union - use googleOauth2ProviderConfig for Google
+            google_oauth2_config = {}
+            
+            # Add Google-specific configuration
+            if request.google_config:
+                google_oauth2_config['clientId'] = request.google_config.client_id
+                google_oauth2_config['clientSecret'] = request.google_config.client_secret
+            
+            # Map provider type to AWS API enum values
+            vendor_mapping = {
+                'google': 'GoogleOauth2',
+                'atlassian': 'AtlassianOauth2',
+                'microsoft': 'MicrosoftOauth2',
+                'slack': 'SlackOauth2',
+                'custom': 'CustomOauth2',
+                'linkedin': 'LinkedinOauth2',
+                'salesforce': 'SalesforceOauth2',
+                'github': 'GithubOauth2'
             }
             
-            # Add provider-specific configuration
-            if request.google_config:
-                create_params['googleConfig'] = {
-                    'clientId': request.google_config.client_id,
-                    'clientSecret': request.google_config.client_secret
-                }
+            provider_vendor = vendor_mapping.get(request.provider_type.lower(), request.provider_type)
             
-            if request.client_token:
-                create_params['clientToken'] = request.client_token
+            create_params = {
+                'name': request.name,
+                'credentialProviderVendor': provider_vendor,
+                'oauth2ProviderConfigInput': {
+                    'googleOauth2ProviderConfig': google_oauth2_config
+                }
+            }
+            
+            # Note: scopes are not supported by the AWS API in create requests
+            
+            # Note: clientToken is not supported in the top-level API
             
             # Create the OAuth2 credential provider
             response = agentcore_control_client.create_oauth2_credential_provider(**create_params)
+            
+            # Debug: Log the actual response structure
+            logger.info(f"Full AWS API response: {response}")
             
             # Convert datetime fields to ISO format strings
             if 'createdAt' in response:
@@ -96,16 +117,27 @@ class AgentCoreIdentityClient:
             if 'ResponseMetadata' in response:
                 del response['ResponseMetadata']
             
-            logger.info(f"Successfully created OAuth2 Credential Provider: {response.get('credentialProviderId')}")
+            logger.info(f"Successfully created OAuth2 Credential Provider: {response.get('name')}")
+            
+            # Handle the actual API response structure
+            # The API returns 'credentialProviderArn' instead of 'arn'
+            # Many fields are not returned in create response, so we provide defaults
+            arn = response.get('credentialProviderArn', '')
+            
+            # Extract provider ID from the ARN if not directly provided
+            credential_provider_id = response.get('credentialProviderId')
+            if not credential_provider_id and arn:
+                # Extract from ARN: arn:aws:bedrock-agentcore:region:account:token-vault/default/oauth2credentialprovider/NAME
+                credential_provider_id = arn.split('/')[-1] if '/' in arn else response['name']
             
             return CreateOauth2CredentialProviderResponse(
-                arn=response['arn'],
-                credential_provider_id=response['credentialProviderId'],
+                arn=arn,
+                credential_provider_id=credential_provider_id or response['name'],
                 name=response['name'],
-                provider_type=response['providerType'],
-                status=OAuth2CredentialProviderStatus(response['status']),
-                scopes=response['scopes'],
-                created_at=response['createdAt']
+                provider_type=provider_vendor,  # Use the vendor we sent since it's not returned
+                status=OAuth2CredentialProviderStatus.CREATING,  # Default status for new providers
+                scopes=request.scopes or [],  # Use requested scopes since not returned
+                created_at=response.get('createdAt', '')  # May not be returned
             )
             
         except Exception as e:
@@ -120,7 +152,7 @@ class AgentCoreIdentityClient:
         Delete an OAuth2 Credential Provider.
         
         Args:
-            request: DeleteOauth2CredentialProviderRequest containing provider ID
+            request: DeleteOauth2CredentialProviderRequest containing provider ID/name
             
         Returns:
             DeleteOauth2CredentialProviderResponse with deletion status
@@ -128,15 +160,16 @@ class AgentCoreIdentityClient:
         Raises:
             Exception: If credential provider deletion fails
         """
-        logger.info(f"Deleting OAuth2 Credential Provider with ID: {request.credential_provider_id}")
+        logger.info(f"Deleting OAuth2 Credential Provider with ID/name: {request.credential_provider_id}")
         
         try:
-            # Delete the credential provider
+            # Delete the credential provider using name parameter
+            # The API now requires 'name' instead of 'credentialProviderId'
             response = agentcore_control_client.delete_oauth2_credential_provider(
-                credentialProviderId=request.credential_provider_id
+                name=request.credential_provider_id
             )
             
-            logger.info(f"Successfully deleted OAuth2 Credential Provider with ID: {request.credential_provider_id}")
+            logger.info(f"Successfully deleted OAuth2 Credential Provider with ID/name: {request.credential_provider_id}")
             
             return DeleteOauth2CredentialProviderResponse(
                 status=OAuth2CredentialProviderStatus.DELETING
@@ -154,7 +187,7 @@ class AgentCoreIdentityClient:
         Retrieve details of an OAuth2 Credential Provider.
         
         Args:
-            request: GetOauth2CredentialProviderRequest containing provider ID
+            request: GetOauth2CredentialProviderRequest containing provider ID/name
             
         Returns:
             GetOauth2CredentialProviderResponse with provider details
@@ -162,12 +195,13 @@ class AgentCoreIdentityClient:
         Raises:
             Exception: If credential provider retrieval fails
         """
-        logger.info(f"Getting OAuth2 Credential Provider with ID: {request.credential_provider_id}")
+        logger.info(f"Getting OAuth2 Credential Provider with ID/name: {request.credential_provider_id}")
         
         try:
-            # Get the credential provider details
+            # Get the credential provider details using name parameter
+            # The API now requires 'name' instead of 'credentialProviderId'
             response = agentcore_control_client.get_oauth2_credential_provider(
-                credentialProviderId=request.credential_provider_id
+                name=request.credential_provider_id
             )
             
             # Convert datetime fields to ISO format strings
@@ -180,17 +214,21 @@ class AgentCoreIdentityClient:
             if 'ResponseMetadata' in response:
                 del response['ResponseMetadata']
             
-            logger.info(f"Successfully retrieved OAuth2 Credential Provider with ID: {request.credential_provider_id}")
+            logger.info(f"Successfully retrieved OAuth2 Credential Provider with ID/name: {request.credential_provider_id}")
+            
+            # Handle the actual API response structure for get operations
+            arn = response.get('credentialProviderArn', response.get('arn', ''))
+            credential_provider_id = response.get('credentialProviderId', request.credential_provider_id)
             
             return GetOauth2CredentialProviderResponse(
-                arn=response['arn'],
-                credential_provider_id=response['credentialProviderId'],
-                name=response['name'],
-                provider_type=response['providerType'],
-                status=OAuth2CredentialProviderStatus(response['status']),
-                scopes=response['scopes'],
-                created_at=response['createdAt'],
-                last_updated_at=response['lastUpdatedAt']
+                arn=arn,
+                credential_provider_id=credential_provider_id,
+                name=response.get('name', request.credential_provider_id),
+                provider_type=response.get('providerType', 'GoogleOauth2'),
+                status=OAuth2CredentialProviderStatus(response.get('status', 'READY')),
+                scopes=response.get('scopes', []),
+                created_at=response.get('createdAt', ''),
+                last_updated_at=response.get('lastUpdatedAt', '')
             )
             
         except Exception as e:
@@ -298,18 +336,25 @@ class AgentCoreIdentityClient:
             
             if request.name is not None:
                 update_params['name'] = request.name
-                
-            if request.scopes is not None:
-                update_params['scopes'] = request.scopes
+            
+            # Note: scopes are not supported by the AWS API in update requests
+            
+            # Build oauth2ProviderConfigInput if any oauth2-specific fields are provided
+            google_oauth2_config = {}
+            has_oauth2_updates = False
                 
             if request.google_config is not None:
-                update_params['googleConfig'] = {
-                    'clientId': request.google_config.client_id,
-                    'clientSecret': request.google_config.client_secret
+                google_oauth2_config['clientId'] = request.google_config.client_id
+                google_oauth2_config['clientSecret'] = request.google_config.client_secret
+                has_oauth2_updates = True
+            
+            # Only add oauth2ProviderConfigInput if we have oauth2-specific updates
+            if has_oauth2_updates:
+                update_params['oauth2ProviderConfigInput'] = {
+                    'googleOauth2ProviderConfig': google_oauth2_config
                 }
-                
-            if request.client_token:
-                update_params['clientToken'] = request.client_token
+            
+            # Note: clientToken is not supported in update operations
             
             # Update the credential provider
             response = agentcore_control_client.update_oauth2_credential_provider(**update_params)

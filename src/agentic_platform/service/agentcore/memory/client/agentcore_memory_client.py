@@ -10,8 +10,6 @@ Usage:
   - It handles provision action for now
 
 Environment Variables:
-  - MEMORY_RETENTION_PERIOD: Number of days to retain memory (default: 30)
-  - ENVIRONMENT: Deployment environment (e.g., dev, prod)
   - REGION: AWS region for Bedrock  resources
 """
 
@@ -20,17 +18,19 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
 from typing import Any, Dict
 
 from agentic_platform.service.agentcore.types import (
     MemoryEvent,
+    MemoryStrategy,
     CreateMemoryProviderRequest,
     CreateMemoryProviderResponse,
     CreateEventRequest,
     CreateEventResponse,
     DeleteMemoryProviderRequest,
     DeleteMemoryProviderResponse,
+    DeleteMemoryRecordRequest,
+    DeleteMemoryRecordResponse,
     GetMemoryProviderRequest,
     GetMemoryProviderResponse,
     ListEventsRequest,
@@ -41,6 +41,8 @@ from agentic_platform.service.agentcore.types import (
     ListMemoryProvidersResponse,
     ListMemoryProvidersResponseEntry,
     MemoryRecordSummary,
+    RetrieveMemoryRecordsRequest,
+    RetrieveMemoryRecordsResponse,
     UpdateMemoryProviderRequest,
     UpdateMemoryProviderResponse
 )
@@ -50,8 +52,6 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Get environment variables
-MEMORY_RETENTION_DAYS = int(os.environ.get('MEMORY_RETENTION_PERIOD', 30))
-ENVIRONMENT = os.environ.get('ENVIRONMENT', '-AgentPath')
 REGION = os.environ.get('REGION', 'us-west-2')
 
 agentcore_client = boto3.client('bedrock-agentcore', region_name=REGION)
@@ -60,47 +60,10 @@ ssm_client = boto3.client('ssm', region_name=REGION)
 agentcore_memory_id = None
 
 class AgentCoreMemoryClient:
-
-    @staticmethod
-    def _get_agentcore_memory_id():
-        global agentcore_memory_id
-        if not agentcore_memory_id:
-            try:
-                param_name = f"/{ENVIRONMENT}/agentcore_memory_id"
-                # print(f"Checking for ssm param {param_name}")
-                parameters = ssm_client.get_parameters_by_path(
-                    Path=param_name
-                )['Parameters']
-                if len(parameters) > 0:
-                    agentcore_memory_id = parameters[0]['Value']
-                else:
-                    print(f"Creating agentcore model {ENVIRONMENT}")
-                    # Create a proper CreateMemoryProviderRequest with default values
-                    create_request = CreateMemoryProviderRequest(
-                        environment=ENVIRONMENT,
-                        retention_days=MEMORY_RETENTION_DAYS
-                    )
-                    response = AgentCoreMemoryClient.create_memory_provider(create_request)
-                    print(f"response from create_model_provider {response}")
-
-                    AgentCoreMemoryClient.wait_for_memory_provider_creation(
-                        response.memory_id
-                    )
-                    agentcore_memory_id = response.memory_id
-                    ssm_client.put_parameter(
-                        Name=param_name,
-                        Value=agentcore_memory_id,
-                        Type='String',
-                        Overwrite=True
-                    )
-
-            except Exception as e:
-                raise e
-        return agentcore_memory_id
-
+    
     @staticmethod
     def dates_to_strings(agentcore_memory):
-        # print(f"dates_to_strings received agentcore_memory {agentcore_memory}")
+        # logger.info(f"dates_to_strings received agentcore_memory {agentcore_memory}")
         if not isinstance(agentcore_memory, dict):
             agentcore_memory = agentcore_memory.__dict__
         if 'createdAt' in agentcore_memory:
@@ -127,16 +90,16 @@ class AgentCoreMemoryClient:
             Dictionary with the provision result
         """
         global agentcore_memory_id
-
-        print(f"Provisioning  Memory {ENVIRONMENT} with {request.retention_days} day retention for environment {ENVIRONMENT}")
+        
+        logger.info(f"Provisioning  Memory {request.name} with {request.retention_days} day retention.")
         try:
             # Create a unique resource name and namespace for this environment            
             # Create memory configuration using the control plane client
-            memory_name = ENVIRONMENT.replace('-','_')
-            print(f"creating memory name {memory_name}")
+            memory_name = request.name.replace('-','_')[:47]
+            logger.info(f"creating memory name {memory_name}")
             create_response = agentcore_control_client.create_memory(
                 name=memory_name,
-                description=f" memory for {ENVIRONMENT} environment",
+                description=f"{request.name} AgentCore Memory",
                 eventExpiryDuration=request.retention_days, 
                 memoryStrategies=[
                     {
@@ -159,21 +122,21 @@ class AgentCoreMemoryClient:
                     }
                 ]
             )['memory']
-            print(f"Got create response {create_response}")
+            logger.info(f"Got create response {create_response}")
             memory_id = create_response['id']
-            print(f"Creating agentcore memory resource with ID: {memory_id}")
-            print("Waiting for memory creation to complete.")
+            logger.info(f"Creating agentcore memory resource with ID: {memory_id}")
+            logger.info("Waiting for memory creation to complete.")
             result = AgentCoreMemoryClient.wait_for_memory_provider_creation(memory_id)
-            print(f"Memory creation result: {result}")
+            logger.info(f"Memory creation result: {result}")
             status = agentcore_control_client.get_memory(
                 memoryId=memory_id
             )['memory']['status']
 
-            print(f"memory {memory_id} status {status}")
-            if not status == 'READY':
+            logger.info(f"memory {memory_id} status {status}")
+            if not status == 'ACTIVE':
                 raise Exception(f'Failed to create memory {memory_name}')
             
-            AgentCoreMemoryClient._save_agentcore_memory_id(memory_id)
+            AgentCoreMemoryClient._save_agentcore_memory_id(memory_id, memory_name)
             logger.info(" Memory provisioning completed successfully")
             agentcore_memory_id = memory_id
             return CreateMemoryProviderResponse(
@@ -183,16 +146,16 @@ class AgentCoreMemoryClient:
             )
         
         except Exception as create_error:
-            print(f"ERROR: {str(create_error)}")
+            logger.debug(f"ERROR: {str(create_error)}")
             if "already exists" in str(create_error):
-                print(f"Memory {memory_name} already exists")
+                logger.info(f"Memory {memory_name} already exists")
                 memories = agentcore_control_client.list_memories()['memories']
                 for mem in memories:
                     if mem['id'].split('-')[0] == memory_name:
-                        print(f"Found memory {mem}")
+                        logger.info(f"Found memory {mem}")
                         agentcore_memory_id = mem['id']
-                        AgentCoreMemoryClient._save_agentcore_memory_id(agentcore_memory_id)
-                        print(f"Returning existing agentcore_memory_id {agentcore_memory_id}")
+                        AgentCoreMemoryClient._save_agentcore_memory_id(agentcore_memory_id, memory_name)
+                        logger.info(f"Returning existing agentcore_memory_id {agentcore_memory_id}")
                         return CreateMemoryProviderResponse(
                             memory_id=agentcore_memory_id,
                             name=memory_name,
@@ -215,20 +178,54 @@ class AgentCoreMemoryClient:
         Returns:
             Boolean indicating success
         """
-        print(f"delete_memory_provider got request {request}")
+        logger.info(f"delete_memory_provider got request {request}")
         try:
             memory_id = request.memory_id
-            print(f"Deleting memory with id {memory_id}")
+            logger.info(f"Deleting memory with id {memory_id}")
             # Delete the memory resource 
             agentcore_control_client.delete_memory(
                 memoryId=memory_id
             )
             
-            print(f"Successfully deleted memory resource with ID: {memory_id}")
+            logger.info(f"Successfully deleted memory resource with ID: {memory_id}")
             return DeleteMemoryProviderResponse(memory_id=memory_id)
             
         except Exception as e:
             logger.error(f"Error deleting  Memory resource: {str(e)}")
+            raise e
+
+    @staticmethod
+    def delete_memory_record(
+        request: DeleteMemoryRecordRequest
+    ) -> DeleteMemoryRecordResponse:
+        """
+        Delete a memory record from an AgentCore Memory resource.
+        
+        Args:
+            request: DeleteMemoryRecordRequest containing memory_id and memory_record_id
+            
+        Returns:
+            DeleteMemoryRecordResponse with the deleted memory record ID
+        """
+        logger.info(f"delete_memory_record got request {request}")
+        try:
+            memory_id = request.memory_id
+            memory_record_id = request.memory_record_id
+            logger.info(f"Deleting memory record {memory_record_id} from memory {memory_id}")
+            
+            # Delete the memory record using the data plane client
+            response = agentcore_client.delete_memory_record(
+                memoryId=memory_id,
+                memoryRecordId=memory_record_id
+            )
+            
+            deleted_record_id = response['memoryRecordId']
+            logger.info(f"Successfully deleted memory record with ID: {deleted_record_id}")
+            return DeleteMemoryRecordResponse(memory_record_id=deleted_record_id)
+            
+        except Exception as e:
+            logger.error(f"Error deleting memory record: {str(e)}")
+            logger.error(f"Request details - memory_id: {request.memory_id}, memory_record_id: {request.memory_record_id}")
             raise e
 
     @staticmethod
@@ -244,21 +241,40 @@ class AgentCoreMemoryClient:
         Returns:
             GetMemoryProviderResponse with memory details
         """
-        print(f"get_memory_provider got request {request}")
+        logger.info(f"get_memory_provider got request {request}")
         try:
             memory_id = request.memory_id
-            print(f"Retrieving memory with id {memory_id}")
+            logger.info(f"Retrieving memory with id {memory_id}")
             # Get the memory resource 
             response = agentcore_control_client.get_memory(
                 memoryId=memory_id
             )['memory']
             
-            print(f"Successfully retrieved memory resource with ID: {memory_id}")
+            logger.info(f"Successfully retrieved memory resource with ID: {memory_id}, response {response}")
+            strats = []
+            for strat in response['strategies']:
+                logger.info(f"Got strategy {strat}")
+                strats.append(MemoryStrategy(
+                    strategy_id=strat['strategyId'],
+                    name=strat['name'],
+                    description=strat['description'],
+                    memory_type=strat['type'],
+                    namespaces=strat['namespaces'],
+                    created_at=strat['createdAt'],
+                    updated_at=strat['updatedAt'],
+                    status=strat['status']
+                ))
             return GetMemoryProviderResponse(
-                memory_id=response['id'],
                 arn=response['arn'],
+                memory_id=response['id'],
                 name=response['name'],
+                description=response['description'],
+                event_expiry_duration=response['eventExpiryDuration'],
                 status=response['status'],
+                failure_reason=response['failureReason'] if 'failureReason' in response else '',
+                created_at=response['createdAt'],
+                updated_at=response['updatedAt'],
+                strategies=strats
             )
             
         except Exception as e:
@@ -316,7 +332,7 @@ class AgentCoreMemoryClient:
         memory_records = []
 
         for rec in response['memoryRecordSummaries']:
-            print(f"Got response record {rec}")
+            logger.info(f"Got response record {rec}")
             memory_records.append(MemoryRecordSummary(
                 memory_record_id=rec['memoryRecordId'],
                 content=rec['content'],
@@ -329,6 +345,85 @@ class AgentCoreMemoryClient:
             memory_record_summaries=memory_records,
             next_token= None if 'nextToken' not in response else response['nextToken']
         )
+
+    @staticmethod
+    def retrieve_memory_records(
+        request: RetrieveMemoryRecordsRequest
+    ) -> RetrieveMemoryRecordsResponse:
+        """
+        Retrieve memory records using semantic search.
+        
+        Args:
+            request: RetrieveMemoryRecordsRequest containing search parameters
+            
+        Returns:
+            RetrieveMemoryRecordsResponse with matching memory records
+        """
+        logger.info(f"retrieve_memory_records got request {request}")
+        try:
+            # Get memory provider details to resolve namespace
+            memory_provider = agentcore_control_client.get_memory(
+                memoryId=request.memory_id
+            )['memory']
+            
+            # Find the namespace for the given memory strategy
+            namespace = ''
+            for strategy in memory_provider['strategies']:
+                if strategy['strategyId'] == request.memory_strategy_id:
+                    namespace = strategy['namespaces'][0]
+                    # Replace placeholders in namespace
+                    namespace = namespace.replace('{actorId}', request.actor_id)
+                    namespace = namespace.replace('{memoryStrategyId}', request.memory_strategy_id)
+                    
+                    # Handle session ID placeholder if present
+                    if '{sessionId}' in namespace:
+                        if request.session_id is not None:
+                            namespace = namespace.replace('{sessionId}', request.session_id)
+                        else:
+                            # Remove the session ID part if no session ID provided
+                            namespace = namespace.replace('/{sessionId}', '')
+                    break
+            
+            if not namespace:
+                raise ValueError(f"Could not find namespace for memory strategy ID: {request.memory_strategy_id}")
+            
+            logger.info(f'Using namespace: {namespace}')
+            
+            # Call the AWS API to retrieve memory records
+            response = agentcore_client.retrieve_memory_records(
+                memoryId=request.memory_id,
+                namespace=namespace,
+                searchCriteria={
+                    'searchQuery': request.query
+                },
+                maxResults=request.max_results
+            )
+            # logger.info(f"Got response from retrieve_memory_records: {response}")
+            # Process the response
+            memory_records = []
+            for rec in response.get('memoryRecordSummaries', []):
+                # logger.info(f"Got response record {rec}")
+                memory_record = MemoryRecordSummary(
+                    memory_record_id=rec['memoryRecordId'],
+                    content=rec['content'],
+                    memory_strategy_id=rec['memoryStrategyId'],
+                    namespaces=rec['namespaces'],
+                    created_at=rec['createdAt'].isoformat(),
+                    score=rec.get('score')  # Include score for semantic search results
+                )
+                memory_records.append(memory_record)
+            
+            logger.info(f"Retrieved {len(memory_records)} memory records for query: {request.query[:50]}...")
+            
+            return RetrieveMemoryRecordsResponse(
+                memory_record_summaries=memory_records,
+                next_token=response.get('nextToken')
+            )
+            
+        except Exception as e:
+            logger.error(f"Error retrieving memory records: {str(e)}")
+            logger.error(f"Request details - memory_id: {request.memory_id}, query: {request.query[:100]}")
+            raise e
     
     @staticmethod
     def list_memory_providers(
@@ -343,7 +438,7 @@ class AgentCoreMemoryClient:
         Returns:
             ListMemoryProvidersResponse with a list of  Memory Providers
         """
-        print(f"list_memory_providers got request {request}")
+        # logger.info(f"list_memory_providers got request {request}")
         try:
             # Prepare parameters for list_memories call
             list_params = {}
@@ -352,17 +447,17 @@ class AgentCoreMemoryClient:
             if request.next_token:
                 list_params['nextToken'] = request.next_token
                 
-            print(f"Listing memories with params: {list_params}")
+            # logger.info(f"Listing memories with params: {list_params}")
             
             # List all memory resources
             response = agentcore_control_client.list_memories(**list_params)
             memories = response.get('memories', [])
             
-            print(f"Successfully retrieved {len(memories)} memory resources")
+            logger.info(f"Successfully retrieved {len(memories)} memory resources")
             
             memory_entries = []
             for memory in memories:
-                print(f"Got memory: {memory}")
+                logger.debug(f"Got memory: {memory}")
                 entry = ListMemoryProvidersResponseEntry(
                     arn=memory['arn'],
                     memory_id=memory['id'],
@@ -371,7 +466,7 @@ class AgentCoreMemoryClient:
                     updated_at=memory['updatedAt'].isoformat()
                 ).to_dict()
                 memory_entries.append(entry)
-            print(f"list_memory_providers returning memories {memory_entries}")
+            logger.info(f"list_memory_providers returning memories {memory_entries}")
             return ListMemoryProvidersResponse(
                 memories=memory_entries
             ).to_dict()
@@ -397,12 +492,12 @@ class AgentCoreMemoryClient:
         Returns:
             Updated memory details
         """
-        print(f"Updating  Memory resource with ID: {request.memory_id}")
+        logger.info(f"Updating  Memory resource with ID: {request.memory_id}")
         try:
             # First get current memory details to only update what's provided
             current_memory = agentcore_control_client.get_memory(
                 memoryId=request.memory_id
-            )
+            )['memory']
             
             # Prepare update parameters
             update_params = {
@@ -413,23 +508,29 @@ class AgentCoreMemoryClient:
             if request.description is not None:
                 update_params['description'] = request.description
                 logger.info(f"Updating description to: {request.description}")
-                
+            else: 
+                update_params['description'] = current_memory['description']
+
             if request.event_expiry_duration is not None:
                 update_params['eventExpiryDuration'] = request.event_expiry_duration
                 logger.info(f"Updating event expiry duration to: {request.event_expiry_duration} days")
-                
+            else: 
+                update_params['eventExpiryDuration'] = current_memory['eventExpiryDuration']
+
             if request.memory_strategies is not None:
                 update_params['memoryStrategies'] = request.memory_strategies
                 logger.info(f"Updating memory strategies")
+            else:
+                update_params['memoryStrategies'] = current_memory['strategies']
                 
             # Only perform update if we have parameters to update
             if len(update_params) > 1:  # more than just memoryId
                 # Update the memory resource
                 response = agentcore_control_client.update_memory(**update_params)['memory']
                 logger.info(f"Successfully updated memory resource with ID: {response['id']}")
-                print(f"update_memory response {response}")
+                logger.info(f"update_memory response {response}")
                 strategies_returned = response['strategies']
-                print(f"strategies returned: {strategies_returned}")
+                logger.info(f"strategies returned: {strategies_returned}")
                 memory_provider = UpdateMemoryProviderResponse(
                     memory_id=response['id'],
                     name=response['name'],
@@ -438,7 +539,7 @@ class AgentCoreMemoryClient:
                     strategies=strategies_returned
                 )
                 result = AgentCoreMemoryClient.dates_to_strings(memory_provider)
-                print(f"Update memory_provider returning result {result}")
+                logger.info(f"Update memory_provider returning result {result}")
                 return result
             else:
                 logger.info(f"No updates provided for memory ID: {request.memory_id}")
@@ -455,7 +556,7 @@ class AgentCoreMemoryClient:
         delay_seconds: int = 30
     ) -> Dict[str, Any]:
         
-        print(f"Called wait_for_memory_provider_creation for memory {memory_id}")
+        logger.info(f"Called wait_for_memory_provider_creation for memory {memory_id}")
         """
         Wait for memory creation to complete.
         
@@ -475,27 +576,21 @@ class AgentCoreMemoryClient:
         
         for attempt in range(1, max_attempts + 1):
             try:
-                print(f"Attempt {attempt}")
+                logger.debug(f"Attempt {attempt}")
                 # Try to get the memory details
                 memory_details = agentcore_control_client.get_memory(
                     memoryId=memory_id
                 )['memory']
-                print(f"Got memory details {memory_details}")
+                logger.debug(f"Got memory details {memory_details}")
 
                 status = memory_details['status']
                 # Check if the memory exists and has all expected attributes
                 if status == 'ACTIVE':
                     logger.info(f"Memory {memory_id} is now available after {attempt} attempts")
-                    # if 'createdAt' in memory_details:
-                    #     print('Updating createdAt field to iso string')
-                    #     memory_details['createdAt'] = memory_details['createdAt'].isoformat()
-                    # if 'updatedAt' in memory_details:
-                    #     print('Updating updatedAt field to iso string')
-                    #     memory_details['updatedAt'] = memory_details['updatedAt'].isoformat()
-                    print(f"wait_for_memory_provider_creation returning memory_details {memory_details}")
+                    logger.info(f"wait_for_memory_provider_creation returning memory_details {memory_details}")
                     return AgentCoreMemoryClient.dates_to_strings(memory_details)
                 else:
-                    print(f"Memory status: {status} (waiting {delay_seconds} seconds to check again)")
+                    logger.debug(f"Memory status: {status} (waiting {delay_seconds} seconds to check again)")
                     
             except Exception as e:
                 if "Memory not found" in str(e) or "does not exist" in str(e):
@@ -506,7 +601,7 @@ class AgentCoreMemoryClient:
             # Wait before the next attempt
             if attempt < max_attempts:
                 for t in range(1,30):
-                    print('.', end='')
+                    logger.debug('.', end='')
                 time.sleep(delay_seconds)
         
         raise TimeoutError(f"Memory {memory_id} did not become available within the timeout period")
@@ -556,118 +651,11 @@ class AgentCoreMemoryClient:
             if attempt < max_attempts:
                 time.sleep(delay_seconds)
         
-        raise TimeoutError(f"Memory {memory_id} was not deleted within the timeout period")
-
-    # @staticmethod
-    # def _events_to_messages(events):
-    #     msgs = []
-    #     for evt in events:
-    #         print(f"Got event {evt}")
-    #         msgs.append(Message(
-    #             role=evt['payload'][0]['conversational']['role'],
-    #             content=[{
-    #                 "type": "text",
-    #                 "text": evt['payload'][0]['conversational']['content']['text']
-    #             }],
-    #             tool_calls=[],
-    #             tool_results=[]
-
-    #         ))
-    #     return msgs
-    
-    # @staticmethod
-    # def _events_to_memories(events):
-    #     mems = []
-    #     memory_id = AgentCoreMemoryClient._get_agentcore_memory_id()
-    #     for evt in events:
-    #         mems.append(MemoryEvent(
-    #             event_id=evt['eventId'],
-    #             memory_id=evt['memoryId'],
-    #             session_id=evt['sessionId'],
-    #             actor_id=evt['actorId'],
-    #             event_timestamp=evt['eventTimestamp'],
-    #             payload=evt['payload'],
-    #             branch=evt['branch']
-    #         ))
-    #     return mems
-        
-    # @staticmethod
-    # def _initialize_session(actor_id):
-    #     payload = [{
-    #         "conversational": {
-    #             "content": {
-    #                 "text": "Initializing new  memory session."
-    #             },
-    #             "role": "ASSISTANT"
-    #         }
-    #     }]
-    #     event = agentcore_client.create_event(
-    #         memoryId=agentcore_memory_id,
-    #         actorId=actor_id,
-    #         eventTimestamp=datetime.now(),
-    #         payload=payload
-    #     )['event']
-    #     print(f"Got event response {event}")
-        
-        
-    #     session_ctx = SessionContext(
-    #         session_id=event['sessionId'],
-    #         user_id=event['actorId'],
-    #         messages=[Message(
-    #             role='assistant',
-    #             content=[{
-    #                 "type": "text",
-    #                 "text": payload[0]['conversational']['content']['text']
-    #             }]
-    #         )]
-    #     )
-    
-    #     return session_ctx
-    
-    # @staticmethod
-    # def get_memories(request: GetMemoryEventsRequest) -> GetMemoriesResponse:
-    #     # memories in AgentPath are equivalent to events in .
-    #     print(f"get_memories got request {request}, of type {type(request)}")
-    #     args = {
-    #         "sessionId": request.session_id,
-    #         "actorId": request.user_id,
-    #         "maxResults": request.limit,
-    #         "memoryId": AgentCoreMemoryClient._get_agentcore_memory_id()
-    #     }
-    #     if request.next_token:
-    #         args['nextToken'] = request.next_token
-    #     print(f"invoking list_events with args {args}")
-    #     events = agentcore_client.list_events(**args)['events']
-    #     print(f"Got events: {events}")
-    #     memories = AgentCoreMemoryClient._events_to_memories(events)
-    #     print(f"Converted events to memories: {memories}")
-    #     # for evt in events:
-    #     #     del evt['memoryId']
-    #     #     del evt['actorId']
-    #     #     memories.append(evt)
-    #     # if memories == []:
-    #     #     print(f"Creating default initial memory.")
-    #     #     if not hasattr(request, 'agent_id') or not request.agent_id:
-    #     #         request.agent_id='not submitted with request'
-
-    #     #     mem = Memory(
-    #     #         session_id=request.session_id,
-    #     #         user_id=request.user_id,
-    #     #         agent_id=request.agent_id,
-    #     #         content="No memories yet.",
-    #     #         embedding_model="embedding model n/a with Bedrock ",
-    #     #     )
-    #     #     print(f"Returning initial mem {mem}")
-    #     #     memories = [mem]
-    #     print(f"returning context: {memories}")
-    #     return GetMemoriesResponse(
-    #         memories=memories
-    #     )
-    
+        raise TimeoutError(f"Memory {memory_id} was not deleted within the timeout period")    
     
     @staticmethod
     def create_event(request: CreateEventRequest) -> CreateEventResponse:
-        print(f"Sending payload for create_memory: {request.payload}")
+        logger.info(f"Sending payload for create_memory: {request.payload}")
         response: Dict[str, Any] = agentcore_client.create_event(
             memoryId=request.memory_id,
             sessionId=request.session_id,
@@ -676,7 +664,7 @@ class AgentCoreMemoryClient:
             payload=request.payload
         )['event']
 
-        print(f"Response from create_event: {response}")
+        logger.info(f"Response from create_event: {response}")
 
         memory_event = MemoryEvent(
             memory_id=response['memoryId'],
@@ -688,13 +676,13 @@ class AgentCoreMemoryClient:
             branch=response['branch']
         )
 
-        print(f"Created memory event {memory_event}")
+        logger.info(f"Created memory event {memory_event}")
         return memory_event
 
     @staticmethod
-    def _save_agentcore_memory_id(memory_id):
+    def _save_agentcore_memory_id(memory_id, memory_name):
         ssm_client.put_parameter(
-            Name=f"/{ENVIRONMENT}/agentcore_memory_id",
+            Name=f"/{memory_name}/agentcore_memory_id",
             Value=memory_id,
             Type="String",
             Overwrite=True

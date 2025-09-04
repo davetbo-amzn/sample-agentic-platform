@@ -47,8 +47,6 @@ pytest tests-agentcore/test_agentcore_runtime_client.py::test_create_agent_runti
 ## Environment Variables
 
 - `REGION` - AWS region to use (default: us-west-2)
-- `MEMORY_RETENTION_PERIOD` - Memory retention in days (default: 30) [Memory tests only]
-- `ENVIRONMENT` - Environment name prefix (default: AgentCore-AgentPath) [Memory tests only]
 - `TEST_WITH_MEMORY_ID` - Use existing memory ID for testing [Memory tests only]
 - `TEST_WITH_RUNTIME_ID` - Use existing runtime ID for testing [Runtime tests only]
 - `TEST_CONTAINER_URI` - **Required for runtime creation**: Real ECR container URI (e.g., `123456789012.dkr.ecr.us-west-2.amazonaws.com/my-agent:latest`)

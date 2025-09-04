@@ -21,16 +21,56 @@ variable "stack_name" {
 }
 
 ########################################################
+# Cognito Configuration Variables
+########################################################
+
+variable "enable_cognito" {
+  description = "Enable Cognito authentication stack"
+  type        = bool
+  default     = true
+}
+
+variable "cognito_allowed_email_domains" {
+  description = "List of allowed email domains for Cognito signup"
+  type        = list(string)
+  default     = ["amazon.com"]
+}
+
+variable "cognito_verification_email_subject" {
+  description = "Subject for Cognito verification email"
+  type        = string
+  default     = "Your verification code"
+}
+
+variable "cognito_verification_email_body" {
+  description = "Body for Cognito verification email"
+  type        = string
+  default     = "Your verification code is {####}"
+}
+
+variable "cognito_callback_urls" {
+  description = "List of callback URLs for Cognito"
+  type        = list(string)
+  default     = ["https://localhost:3000/callback"]
+}
+
+variable "cognito_logout_urls" {
+  description = "List of logout URLs for Cognito"
+  type        = list(string)
+  default     = ["https://localhost:3000/logout"]
+}
+
+########################################################
 # Variables to be connected from Cognito stack elsewhere
 ########################################################
 variable "cognito_user_pool_id" {
-  description = "Cognito User Pool ID"
+  description = "Cognito User Pool ID (used when enable_cognito is false)"
   type        = string
   default     = "us-west-2_bA0e3osFu"
 }
 
 variable "cognito_user_pool_client_id" {
-  description = "Cognito User Pool Client ID"
+  description = "Cognito User Pool Client ID (used when enable_cognito is false)"
   type        = string
   default     = "7ljspeqi6oeq43nrvkekh86lfc"
 }
@@ -49,6 +89,12 @@ variable "bedrock_agentcore_memory_retention_days" {
   }
 }
 
+variable "gateway_lambda_zip_path" {
+  description = "Path to the Lambda deployment package zip file for memory operations"
+  type        = string
+  default     = "agentcore-mcp-gateway-lambda.zip"
+}
+
 variable "memory_lambda_zip_path" {
   description = "Path to the Lambda deployment package zip file for memory operations"
   type        = string
@@ -59,6 +105,12 @@ variable "runtime_lambda_zip_path" {
   description = "Path to the Lambda deployment package zip file for runtime controller"
   type        = string
   default     = "agentcore-runtime-lambda.zip"
+}
+
+variable "web_search_lambda_zip_path" {
+  description = "Path to the Lambda deployment package zip file for web search tool"
+  type        = string
+  default     = "web-search-tool-lambda.zip"
 }
 
 variable "tags" {

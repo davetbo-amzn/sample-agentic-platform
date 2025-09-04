@@ -82,7 +82,7 @@ def get_token(client_id=None, username=None, password=None, client_secret=None):
         
     except Exception as e:
         print(f"Error getting token: {str(e)}")
-        sys.exit(1)
+        raise e
 
 if __name__ == "__main__":
     # Add command line arguments

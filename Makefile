@@ -11,6 +11,9 @@
 .PHONY: knowledge-base
 .PHONY: pydanticai-agent
 .PHONY: agentic_chat
+.PHONY: agentcore-runtime-controller
+.PHONY: agentcore-service-runner
+
 # Makefile for running servers locally with UV and the correct environment variables.
 # Make sure to fill in your .env file with the correct values.
 
@@ -57,8 +60,16 @@ llm-gateway:
 
 memory-gateway:
 	cd src && \
-	uv run --env-file agentic_platform/service/memory_gateway/.env -- uvicorn agentic_platform.service.memory_gateway.server:app --reload
+	uv run --env-file agentic_platform/service/memory_gateway/.env -- uvicorn agentic_platform.service.memory_gateway.server:app --reload --port 8004
 
 retrieval-gateway:
 	cd src && \
 	uv run --env-file agentic_platform/service/retrieval_gateway/.env -- uvicorn agentic_platform.service.retrieval_gateway.server:app --reload
+
+agentcore-runtime-controller:
+	cd src && \
+	uv run --env-file agentic_platform/service/agentcore/runtime/.env -- uvicorn agentic_platform.service.agentcore.runtime.server:app --reload --port 8003
+	
+agentcore-service-runner:
+	cd src && \
+	uv run --env-file agentic_platform/service/agentcore/runtime/.env -- uvicorn agentic_platform.service.agentcore.runtime.example_agent_deployment.service_runner:app --reload --port 8004

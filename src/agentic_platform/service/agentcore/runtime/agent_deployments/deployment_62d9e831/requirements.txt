@@ -1,3 +1,0 @@
-bedrock-agentcore-starter-toolkit
-strands-agents
-pydantic

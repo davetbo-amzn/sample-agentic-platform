@@ -44,15 +44,26 @@ class MemoryRecordSummary(BaseModel):
     namespaces: List[str]
     created_at: str
     score: Optional[float] = None
+    def to_dict(item):
+        return {
+            "memory_record_id": item.memory_record_id,
+            "content": item.content,
+            "memory_strategy_id": item.memory_strategy_id,
+            "namespaces": item.namespaces,
+            "created_at": item.created_at,
+            "score": item.score
+        }
 
 class MemoryProviderOperation(Enum):
     CREATE = 'create-memory-provider'
     CREATE_EVENT = 'create-event' # this is an agentpath memory == agentcore event
     DELETE = 'delete-memory-provider'
+    DELETE_MEMORY_RECORD = 'delete-memory-record'
     GET = 'get-memory-provider'
     LIST_EVENTS = 'list-events' # note this is AgentPath memories, which are like agentcore events
     LIST_MEMORY_PROVIDERS = 'list-memory-providers'
     LIST_MEMORY_RECORDS = 'list-memory-records'
+    RETRIEVE_MEMORY_RECORDS = 'retrieve-memory-records'
     UPDATE = 'update-memory-provider'
     WAIT_FOR_CREATE = 'wait-for-memory-provider-creation'
     WAIT_FOR_DELETE = 'wait-for-memory-provider-deletion'
@@ -66,8 +77,8 @@ class MemoryProviderResponse(BaseModel):
     result: Any
 
 class CreateMemoryProviderRequest(BaseModel):
-    environment: str="-AgentPath"
-    retention_days: int=30,
+    name: str
+    retention_days: int=30
 
 class CreateMemoryProviderResponse(BaseModel):
     memory_id: str
@@ -94,7 +105,7 @@ class CreateEventResponse(BaseModel):
     branch: Dict[str, str]
 
 class CreateAgentRuntimeRequest(BaseModel):
-    agent_description: str
+    agent_description: Optional[str] = None
     name: str
     ecr_repo_uri: Optional[str] = None
     entrypoint: Optional[str] = 'entrypoint.py'
@@ -159,9 +170,10 @@ class DeleteAgentRuntimeRequest(BaseModel):
 
 class DeleteAgentRuntimeResponse(BaseModel):
     status: AgentRuntimeStatus
-    
+    agent_runtime_id: str
     def to_dict(self):
         return {
+            "agent_runtime_id": self.agent_runtime_id,
             'status': self.status.value if isinstance(self.status, AgentRuntimeStatus) else self.status
         }
 
@@ -170,6 +182,13 @@ class DeleteMemoryProviderRequest(BaseModel):
 
 class DeleteMemoryProviderResponse(BaseModel):
     memory_id: str
+
+class DeleteMemoryRecordRequest(BaseModel):
+    memory_id: str
+    memory_record_id: str
+
+class DeleteMemoryRecordResponse(BaseModel):
+    memory_record_id: str
 
 class GetAgentRuntimeRequest(BaseModel):
     agent_runtime_id: str
@@ -188,8 +207,6 @@ class GetAgentRuntimeResponse(BaseModel):
     agent_runtime_artifact:Dict[str, Any] = None
     network_configuration: Dict[str, str] = None
     protocol_configuration: Dict[str, str] = None
-    environment_variables: Dict[str, str] = None
-    authorizer_configuration: Dict[str, Any] = None
     def to_dict(self):
         return {
             'agent_runtime_arn': self.agent_runtime_arn,
@@ -204,19 +221,59 @@ class GetAgentRuntimeResponse(BaseModel):
             'agent_runtime_artifact': self.agent_runtime_artifact,
             'network_configuration': self.network_configuration,
             'protocol_configuration': self.protocol_configuration,
-            'environment_variables': self.environment_variables,
-            'authorizer_configuration': self.authorizer_configuration
         }
     
 
 class GetMemoryProviderRequest(BaseModel):
     memory_id: str 
 
+
+class MemoryStrategy(BaseModel):
+    strategy_id: str
+    name: str
+    description: str
+    memory_type: str
+    namespaces: List[str]
+    created_at: datetime
+    updated_at: datetime
+    status: str
+    def to_dict(item): 
+        return {
+            "strategy_id": item.strategy_id,
+            "name": item.name,
+            "description": item.description,
+            "memory_type": item.memory_type,
+            "namespaces": item.namespaces,
+            "created_at": item.created_at.isoformat(),
+            "updated_at": item.updated_at.isoformat()
+        }
+    
 class GetMemoryProviderResponse(BaseModel):
     arn: str
     memory_id: str
     name: str
+    description: str
+    event_expiry_duration: int
     status: str
+    failure_reason: str=''
+    created_at: datetime
+    updated_at: datetime
+    strategies: List[MemoryStrategy]
+    def to_dict(item):
+        strats = []
+        for strat in item.strategies:
+            strats.append(strat.to_dict())
+        return {
+            "arn": item.arn,
+            "memory_id": item.memory_id,
+            "description": item.description,
+            "event_expiry_duration": item.event_expiry_duration,
+            "status": item.status,
+            "failure_reason": item.failure_reason,
+            "created_at": item.created_at.isoformat(),
+            "updated_at": item.updated_at.isoformat(),
+            "strategies": strats
+        }
 
 class ListEventsRequest(BaseModel):
     memory_id: str
@@ -239,6 +296,18 @@ class ListMemoryRecordsRequest(BaseModel):
     next_token: Optional[str] = None
 
 class ListMemoryRecordsResponse(BaseModel):
+    memory_record_summaries: List[MemoryRecordSummary]
+    next_token: Optional[str] = None
+
+class RetrieveMemoryRecordsRequest(BaseModel):
+    memory_id: str
+    query: str
+    memory_strategy_id: str
+    actor_id: str
+    max_results: int = 5
+    session_id: Optional[str] = None
+
+class RetrieveMemoryRecordsResponse(BaseModel):
     memory_record_summaries: List[MemoryRecordSummary]
     next_token: Optional[str] = None
 
@@ -288,7 +357,7 @@ class ListAgentRuntimesResponse(BaseModel):
 class UpdateMemoryProviderRequest(BaseModel):
     memory_id: str
     description: str
-    event_expiry_duration: int=30
+    event_expiry_duration: Optional[int]=None
     memory_strategies: Optional[Dict[str, List[Dict[str, Any]]]] = {}
 
 class UpdateMemoryProviderResponse(BaseModel):
@@ -308,14 +377,13 @@ class ListRuntimesResponse(BaseModel):
 
 class UpdateAgentRuntimeRequest(BaseModel):
     agent_runtime_id: str
-    agent_runtime_artifact: Dict[str, Dict[str, str]]
-    roleArn: str
-    network_configuration: Dict[str, str]
-    protocol_configuration: Dict[str, str]
-    authorizer_configuration: Dict[str, Dict[str, Any]]
-    client_token: Optional[str]
-    description: Optional[str]
-    environment_variables: Optional[Dict[str, str]] = {}
+    agent_runtime_artifact: Optional[Dict[str, Dict[str, str]]] = None
+    roleArn: Optional[str] = None
+    network_configuration: Optional[Dict[str, str]] = None
+    protocol_configuration: Optional[Dict[str, str]] = None
+    client_token: Optional[str] = None
+    description: Optional[str] = None
+    environmentVariables: Optional[Dict[str, str]] = None
 
 class UpdateAgentRuntimeResponse(BaseModel):
     agent_runtime_arn: str
@@ -500,4 +568,208 @@ class UpdateOauth2CredentialProviderResponse(BaseModel):
             'scopes': self.scopes,
             'created_at': self.created_at,
             'last_updated_at': self.last_updated_at
+        }
+
+# Gateway Types
+class GatewayOperation(Enum):
+    CREATE = 'create-gateway'
+    DELETE = 'delete-gateway'
+    GET = 'get-gateway'
+    LIST = 'list-gateways'
+    UPDATE = 'update-gateway'
+    WAIT_FOR_CREATE = 'wait-for-gateway-creation'
+    WAIT_FOR_DELETE = 'wait-for-gateway-deletion'
+
+class GatewayRequest(BaseModel):
+    operation: GatewayOperation
+    input: Dict[str, Any]
+
+class GatewayResponse(BaseModel):
+    status_code: int
+    result: Any
+    
+    def to_dict(self):
+        return {
+            'status_code': self.status_code,
+            'result': self.result
+        }
+
+class GatewayStatus(Enum):
+    CREATING = 'CREATING'
+    CREATE_FAILED = 'CREATE_FAILED'
+    UPDATING = 'UPDATING'
+    UPDATE_FAILED = 'UPDATE_FAILED'
+    READY = 'READY'
+    DELETING = 'DELETING'
+    
+    def __str__(self):
+        return self.value
+
+class CreateGatewayRequest(BaseModel):
+    name: str
+    role_arn: str
+    protocol_type: str = 'MCP'
+    description: Optional[str] = None
+    protocol_configuration: Optional[Dict[str, Any]] = None
+    authorizer_type: str = 'CUSTOM_JWT'
+    authorizer_configuration: Optional[Dict[str, Any]] = None
+    kms_key_arn: Optional[str] = None
+    exception_level: Optional[str] = None
+    client_token: Optional[str] = Field(default_factory=lambda: uuid4().hex)
+
+class Gateway(BaseModel):
+    gateway_id: str
+    gateway_arn: str
+    gateway_url: str
+    name: str
+    description: Optional[str] = None
+    status: GatewayStatus
+    role_arn: str
+    protocol_type: str
+    protocol_configuration: Optional[Dict[str, Any]] = None
+    authorizer_type: str
+    authorizer_configuration: Optional[Dict[str, Any]] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    
+    def to_dict(self):
+        return {
+            'gateway_id': self.gateway_id,
+            'gateway_arn': self.gateway_arn,
+            'gateway_url': self.gateway_url,
+            'name': self.name,
+            'description': self.description,
+            'status': self.status.value if isinstance(self.status, GatewayStatus) else self.status,
+            'role_arn': self.role_arn,
+            'protocol_type': self.protocol_type,
+            'protocol_configuration': self.protocol_configuration,
+            'authorizer_type': self.authorizer_type,
+            'authorizer_configuration': self.authorizer_configuration,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at
+        }
+
+class CreateGatewayResponse(BaseModel):
+    gateway_id: str
+    gateway_arn: str
+    gateway_url: str
+    name: str
+    status: GatewayStatus
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    
+    def to_dict(self):
+        return {
+            'gateway_id': self.gateway_id,
+            'gateway_arn': self.gateway_arn,
+            'gateway_url': self.gateway_url,
+            'name': self.name,
+            'status': self.status.value if isinstance(self.status, GatewayStatus) else self.status,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at
+        }
+
+class DeleteGatewayRequest(BaseModel):
+    gateway_id: str
+
+class DeleteGatewayResponse(BaseModel):
+    gateway_id: str
+    status: GatewayStatus
+    
+    def to_dict(self):
+        return {
+            'gateway_id': self.gateway_id,
+            'status': self.status.value if isinstance(self.status, GatewayStatus) else self.status
+        }
+
+class GetGatewayRequest(BaseModel):
+    gateway_id: str
+
+class GetGatewayResponse(BaseModel):
+    gateway_id: str
+    gateway_arn: str
+    gateway_url: str
+    name: str
+    description: Optional[str] = None
+    status: GatewayStatus
+    role_arn: str
+    protocol_type: str
+    protocol_configuration: Optional[Dict[str, Any]] = None
+    authorizer_type: str
+    authorizer_configuration: Optional[Dict[str, Any]] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    
+    def to_dict(self):
+        return {
+            'gateway_id': self.gateway_id,
+            'gateway_arn': self.gateway_arn,
+            'gateway_url': self.gateway_url,
+            'name': self.name,
+            'description': self.description,
+            'status': self.status.value if isinstance(self.status, GatewayStatus) else self.status,
+            'role_arn': self.role_arn,
+            'protocol_type': self.protocol_type,
+            'protocol_configuration': self.protocol_configuration,
+            'authorizer_type': self.authorizer_type,
+            'authorizer_configuration': self.authorizer_configuration,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at
+        }
+
+class ListGatewaysRequest(BaseModel):
+    max_results: Optional[int] = 20
+    next_token: Optional[str] = None
+
+class ListGatewaysResponse(BaseModel):
+    gateways: List[Gateway]
+    next_token: Optional[str] = None
+    
+    def to_dict(self):
+        return {
+            'gateways': [gateway.to_dict() for gateway in self.gateways],
+            'next_token': self.next_token
+        }
+
+class UpdateGatewayRequest(BaseModel):
+    gateway_id: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    role_arn: Optional[str] = None
+    protocol_configuration: Optional[Dict[str, Any]] = None
+    authorizer_configuration: Optional[Dict[str, Any]] = None
+    kms_key_arn: Optional[str] = None
+    exception_level: Optional[str] = None
+    client_token: Optional[str] = Field(default_factory=lambda: uuid4().hex)
+
+class UpdateGatewayResponse(BaseModel):
+    gateway_id: str
+    gateway_arn: str
+    gateway_url: str
+    name: str
+    description: Optional[str] = None
+    status: GatewayStatus
+    role_arn: str
+    protocol_type: str
+    protocol_configuration: Optional[Dict[str, Any]] = None
+    authorizer_type: str
+    authorizer_configuration: Optional[Dict[str, Any]] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    
+    def to_dict(self):
+        return {
+            'gateway_id': self.gateway_id,
+            'gateway_arn': self.gateway_arn,
+            'gateway_url': self.gateway_url,
+            'name': self.name,
+            'description': self.description,
+            'status': self.status.value if isinstance(self.status, GatewayStatus) else self.status,
+            'role_arn': self.role_arn,
+            'protocol_type': self.protocol_type,
+            'protocol_configuration': self.protocol_configuration,
+            'authorizer_type': self.authorizer_type,
+            'authorizer_configuration': self.authorizer_configuration,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at
         }
